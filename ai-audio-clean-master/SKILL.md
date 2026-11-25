@@ -15,7 +15,7 @@ metadata:
   short-description: Zero-artifact audiophile time-domain cleanup & linear-phase analog mastering
 ---
 
-# PurePhase Master (AI Audio Clean Master)
+# De-AI Audio Master (`ai-audio-clean-master`)
 
 Clean and naturalize a stereo mix (with or without stems) so it sounds virtually
 indistinguishable from the original (zero watery artifacts, zero mix balance

@@ -1,4 +1,4 @@
-# PurePhase Master
+# De-AI Audio Master
 
 **Studio-grade audio cleanup and linear-phase analog mastering for AI-generated tracks.**
 
@@ -8,7 +8,7 @@ A reusable, zero-artifact mastering skill (`ai-audio-clean-master`) for **Antigr
 
 ## What Technical Tells It Reduces (and What It Doesn't)
 
-PurePhase Master reduces measurable **technical and acoustic artifacts** left behind by generative audio pipelines while keeping your original mix balance and studio fidelity intact:
+De-AI Audio Master reduces measurable **technical and acoustic artifacts** left behind by generative audio pipelines while keeping your original mix balance and studio fidelity intact:
 
 - **Embedded generator metadata**: Strips WAV header tags (such as Suno's `LIST/INFO/ICMT` chunk) down to a clean 44-byte RIFF/WAVE header.
 - **Stationary neural-vocoder comb ripple**: Conservatively flattens fixed-frequency narrowband resonances (`2.2–18.2 kHz`) using a zero-STFT-framing linear-phase FIR.
@@ -24,7 +24,7 @@ PurePhase Master reduces measurable **technical and acoustic artifacts** left be
 
 Common audio-cleanup workarounds (General MIDI/FluidSynth stem swaps, STFT sinusoidal peak-tracking (`SMS`), broadband random-phase resynthesis, raw room slap, or independent-channel time warping) often introduce watery "MP3 birdie" artifacts, dull treble, phase flanging, or mix balance drift on quiet intros and vocal bridges.
 
-**PurePhase Master** eliminates those failure modes by keeping the entire mastering chain **zero-STFT-framing and strictly phase- and stereo-coherent**:
+**De-AI Audio Master** eliminates those failure modes by keeping the entire mastering chain **zero-STFT-framing and strictly phase- and stereo-coherent**:
 
 1. **87.5%-Overlap Exact Additive Wiener Stem Split (Vocal-Guarded)**: Auto-detects correlated bleed stems (e.g., Keyboard/Strings duplicating Synth with `r > 0.35`), protects vocal stems with a `1.4×` guard, protects sub-90 Hz in the backing mix, and splits `original == target_stem + backing` to floating-point precision (`~1e-16`).
 2. **Pure Time-Domain Target-Stem Re-Amp**: Sub-protected (`>120 Hz`) Mid/Side 4×-oversampled Class-A asymmetric triode/tape warmth → 8-tap **Lanczos-4** quadrature Juno-style BBD stereo chorus above `900 Hz` (zero treble loss) → subtle BPM-synced warm LP analog delay tail (`4.2%` wet) → exact RMS restore.
@@ -78,8 +78,8 @@ pip install -r requirements.txt
 
 ### Option A: One-Command Installer
 ```bash
-git clone https://github.com/mfmiami/ai-audio-clean-master.git
-cd ai-audio-clean-master
+git clone https://github.com/mfmiami/de-ai-audio-master.git
+cd de-ai-audio-master
 
 # Install into all three harnesses at once:
 ./install.sh --all
