@@ -1,85 +1,77 @@
-# How-To Guide: Google Antigravity
+# Antigravity Guide
 
-Antigravity is the **highest-leverage harness** for `ai-audio-clean-master` because Gemini models can **natively listen to `.wav` files** via `read_file`. That lets the agent actually ear-check your original track, audition the processed A/B clips, and verify all 4 spot-check clips (intro, hook, verse, bridge) before delivering the final master.
+The main reason Antigravity works well for this skill is that Gemini models can read `.wav` files directly through `read_file`. That means the agent can listen to clips of your original mix, check the audition pass, and listen to four spot clips from the full render (intro, hook, verse, bridge) to catch watery artifacts or quiet-gap noise before you even open the file.
 
----
+## 1. Prerequisites
 
-## 1. Install Prerequisites
-
-Make sure Python (`numpy`, `scipy`, `soundfile`) and `ffmpeg` are installed on your machine:
+Install `ffmpeg` and a Python environment with `numpy`, `scipy`, and `soundfile`:
 
 ```bash
 brew install ffmpeg
 
-# Option A: dedicated venv (recommended)
 python3 -m venv ~/.venvs/audio-master
 ~/.venvs/audio-master/bin/pip install numpy scipy soundfile
-
-# Option B: reuse an existing audio Python venv (e.g., ACE-Step, Demucs, etc.)
 ```
 
----
+If you already have a Python venv with those packages (from Demucs, ACE-Step, etc.), you can point the agent to that interpreter instead.
 
-## 2. Install the Skill in Antigravity
+## 2. Install the skill
 
-Choose **global install** (available in every conversation and workspace) or **workspace-local install**:
+Global install (available in every conversation):
 
-### Global Install (Recommended)
 ```bash
-# From a cloned copy of this repo:
 ./install.sh --antigravity
+```
 
-# Or from the pre-packaged zip:
+Or from the zip:
+
+```bash
 mkdir -p ~/.gemini/config/skills
 unzip dist/ai-audio-clean-master-v2-skill.zip -d ~/.gemini/config/skills/
 ```
 
-### Workspace-Local Install (Project-Specific)
+For a single workspace instead of global install:
+
 ```bash
 mkdir -p /path/to/your-project/.agents/skills
 cp -R ai-audio-clean-master /path/to/your-project/.agents/skills/
 ```
 
-Verify the skill files are in place:
+Check that the files landed where expected:
+
 ```bash
 ls -la ~/.gemini/config/skills/ai-audio-clean-master/
-# Expected: SKILL.md, agents/openai.yaml, scripts/clean_analog_master.py
+# SKILL.md, agents/openai.yaml, scripts/clean_analog_master.py
 ```
 
----
+## 3. Model recommendations
 
-## 3. Recommended Models in Antigravity
+- **Gemini 3 Pro** (or **Gemini 2.5 Pro**): Best default. Good at both hearing subtle audio problems in `.wav` clips and debugging DSP/Python issues if a track needs custom tweaks.
+- **Gemini 3 Flash** (or **Gemini 2.5 Flash**): Faster and cheaper when you just want to run the existing script as-is with audio spot-checks.
+- **Claude Opus 4.6** (inside Antigravity): Useful if you're refactoring the DSP script itself, though switch back to a Gemini model if you want the agent to listen to the audio directly.
 
-| Use Case | Recommended Model | Why |
-| :--- | :--- | :--- |
-| **Default / Best Quality** | **Gemini 3 Pro** (or **Gemini 2.5 Pro**) | Strongest combined **native audio perception** (hears subtle watery artifacts, vocal coloration, and quiet-gap noise) + precise DSP/Python reasoning when tuning parameters. |
-| **Fast Standard Runs** | **Gemini 3 Flash** (or **Gemini 2.5 Flash**) | Fast and cost-effective when running the bundled v2 script end-to-end with native `.wav` ear-checks and minimal custom DSP edits. |
-| **Custom DSP / FIR Refactors** | **Gemini 3 Pro** or **Claude Opus 4.6** | If modifying filter taps, Wiener masks, or adding new analog stages; switch back to a Gemini model for native audio ear-checking. |
+## 4. Typical workflow
 
----
+Start a chat and give the agent your WAV path, optional stems folder, and Python path:
 
-## 4. Step-by-Step Usage Workflow
+> Use the `ai-audio-clean-master` skill on `/path/to/MyTrack.wav` with stems in `/path/to/MyTrack Stems/`.
+> Use `~/.venvs/audio-master/bin/python`.
+> Audit the track and stems first, listen to the original, pick an exposed intro/hook range and a dense chorus range, run `--mode audition`, ear-check the output, and wait for my okay before rendering the full track.
 
-1. **Start a conversation** in Antigravity and point to your stereo mix (and optional stems folder).
-2. **Copy/paste a prompt** like:
+What happens next:
 
-   > Use the `ai-audio-clean-master` skill on `/path/to/MyTrack.wav` (stems are in `/path/to/MyTrack Stems/`).
-   > Use `~/.venvs/audio-master/bin/python` for Python.
-   > Audit the track, listen to the original first, pick the best exposed intro/hook and dense chorus ranges, run `--mode audition`, ear-check the output, and wait for my approval before rendering the full 24-bit master.
+1. The agent inspects the WAV header, stem correlations, and section levels, then listens to short clips of the original.
+2. It runs `--mode audition` and gives you a loudness-matched comparison WAV (`Original -> 1s silence -> Processed`) plus a table of metrics.
+3. Listen to the audition file. If anything sounds off, ask the agent to run `--skip-stem-reamp` vs `--skip-mix-cleanup` to isolate the problem.
+4. Once it sounds right, reply:
 
-3. **Review the Audition Pass**:
-   - Antigravity stages your audio, checks stem correlations (projecting any duplicate bleed cleanly while guarding vocals at `1.4×`), runs `--mode audition`, and listens directly to the rendered clips.
-   - Click the generated `*-Audition.wav` link to compare Original → Processed at matched LUFS.
-   - If you hear anything off on a specific section, ask Antigravity to run an ablation (`--skip-stem-reamp` vs `--skip-mix-cleanup`) and adjust only the offending stage.
-4. **Approve & Render the Full Master**:
-   - Reply: *"Sounds great. Render the full 24-bit master and save a copy in my Downloads folder."*
-   - Antigravity runs `--mode full`, verifies LUFS, LRA, true peak, `6–16 kHz` transient crest, tonal deltas, and clean 44-byte header, ear-checks 4 spot clips across the full song, and delivers the final master.
+> Looks good. Render the full 24-bit master and save a copy to my Downloads folder.
 
----
+The agent runs `--mode full`, checks LUFS, LRA, true peak, `6-16 kHz` transient crest, tonal deltas, and the 44-byte header, listens to four spot clips, and writes the final WAV.
 
-## 5. Tips & Troubleshooting
+## 5. Practical notes
 
-- **Sandbox permissions on macOS**: Antigravity runs shell commands inside a sandbox by default. When your original audio lives in `~/Downloads` or `~/Desktop`, Antigravity will ask once to copy/stage it into the session scratch folder; after that, all DSP rendering and audio auditing run cleanly inside the sandbox with zero extra prompts.
-- **Wrong auto-detected BPM**: If your track is electronic/trance and auto-BPM picks a subharmonic (e.g., `94` instead of `141`), tell Antigravity the true BPM or ask it to measure kick-band BPM from the Drums stem and pass `--bpm <value>`.
-- **No stems available**: Simply omit the stems folder. The skill automatically skips stem re-amping and runs the zero-STFT-framing linear-phase mastering chain on the full stereo mix.
-- **32-bit float DAW archive**: Ask Antigravity to include `--also-float32` during `--mode full` if you want a 32-bit float archival WAV alongside the 24-bit TPDF master.
+- **macOS sandbox**: Antigravity sandboxes terminal commands by default. If your audio is in `~/Downloads` or `~/Desktop`, it will ask once for permission to stage a copy into its scratch directory. Everything after that runs inside the sandbox.
+- **Auto-BPM subharmonics**: On electronic or trance tracks, simple envelope autocorrelation sometimes locks onto 2/3 or 1/2 tempo (for example, `94` instead of `141`). If you know the BPM, pass it in your prompt or ask the agent to check kick-band BPM on the Drums stem and pass `--bpm`.
+- **Stereo mix only (no stems)**: Just leave out the stems folder. The script skips stem re-amping and runs the full-mix chain directly.
+- **Archival float copy**: Ask for `--also-float32` if you also want a 32-bit float WAV for DAW work.
