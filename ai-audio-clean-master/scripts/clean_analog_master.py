@@ -343,7 +343,7 @@ def apply_reference_sparkle_fir(y_proc, x_ref, sr, fir_taps=2049, max_db=0.85):
     """
     Ultra-gentle, broad (~1-octave) linear-phase FIR mastering balance trim (60 Hz - 18.2 kHz)
     clamped strictly within +-0.85 dB so every band from 30 Hz to 18.5 kHz sits within +-0.08 dB
-    of the original reference—ZERO STFT framing, ZERO phase distortion!
+    of the original reference (ZERO STFT framing, ZERO phase distortion).
     """
     n_fft = 8192
     freqs = np.linspace(0.0, sr / 2.0, n_fft // 2 + 1)

@@ -21,7 +21,7 @@ python3 -m venv ~/.venvs/audio-master
 
 ## 2. Install the Skill
 
-### Option A: Claude Code (Global — Recommended)
+### Option A: Claude Code (Global, Recommended)
 ```bash
 # From a cloned copy of this repo:
 ./install.sh --claude
@@ -81,7 +81,7 @@ Start `claude` in your working folder and run:
 
 After listening to the audition WAV:
 
-> Sounds clean—run `--mode full` with the exact kick BPM and save the 24-bit master to `~/Downloads/MyTrack-Reference-Analog-Master-v2-24bit-48kHz.wav`. Verify the 44-byte header with `afinfo` and print the full QA summary.
+> Sounds clean. Run `--mode full` with the exact kick BPM and save the 24-bit master to `~/Downloads/MyTrack-Reference-Analog-Master-v2-24bit-48kHz.wav`. Verify the 44-byte header with `afinfo` and print the full QA summary.
 
 ---
 

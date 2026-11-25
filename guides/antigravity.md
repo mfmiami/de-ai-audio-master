@@ -72,7 +72,7 @@ ls -la ~/.gemini/config/skills/ai-audio-clean-master/
    - Click the generated `*-Audition.wav` link to compare Original → Processed at matched LUFS.
    - If you hear anything off on a specific section, ask Antigravity to run an ablation (`--skip-stem-reamp` vs `--skip-mix-cleanup`) and adjust only the offending stage.
 4. **Approve & Render the Full Master**:
-   - Reply: *"Sounds great — render the full 24-bit master and save a copy in my Downloads folder."*
+   - Reply: *"Sounds great. Render the full 24-bit master and save a copy in my Downloads folder."*
    - Antigravity runs `--mode full`, verifies LUFS, LRA, true peak, `6–16 kHz` transient crest, tonal deltas, and clean 44-byte header, ear-checks 4 spot clips across the full song, and delivers the final master.
 
 ---
@@ -81,5 +81,5 @@ ls -la ~/.gemini/config/skills/ai-audio-clean-master/
 
 - **Sandbox permissions on macOS**: Antigravity runs shell commands inside a sandbox by default. When your original audio lives in `~/Downloads` or `~/Desktop`, Antigravity will ask once to copy/stage it into the session scratch folder; after that, all DSP rendering and audio auditing run cleanly inside the sandbox with zero extra prompts.
 - **Wrong auto-detected BPM**: If your track is electronic/trance and auto-BPM picks a subharmonic (e.g., `94` instead of `141`), tell Antigravity the true BPM or ask it to measure kick-band BPM from the Drums stem and pass `--bpm <value>`.
-- **No stems available**: Simply omit the stems folder—the skill automatically skips stem re-amping and runs the zero-STFT-framing linear-phase mastering chain on the full stereo mix.
+- **No stems available**: Simply omit the stems folder. The skill automatically skips stem re-amping and runs the zero-STFT-framing linear-phase mastering chain on the full stereo mix.
 - **32-bit float DAW archive**: Ask Antigravity to include `--also-float32` during `--mode full` if you want a 32-bit float archival WAV alongside the 24-bit TPDF master.

@@ -1,4 +1,4 @@
 interface:
-  display_name: "AI Audio Clean Master"
+  display_name: "PurePhase Master"
   short_description: "Zero-artifact time-domain audio cleanup & analog mastering"
   default_prompt: "Use $ai-audio-clean-master to audit my track, build a loudness-matched zero-artifact audition WAV first, and render a clean 24-bit master once approved."

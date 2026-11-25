@@ -15,24 +15,24 @@ metadata:
   short-description: Zero-artifact audiophile time-domain cleanup & linear-phase analog mastering
 ---
 
-# AI Audio Clean Master
+# PurePhase Master (AI Audio Clean Master)
 
 Clean and naturalize a stereo mix (with or without stems) so it sounds virtually
-indistinguishable from the original—zero watery artifacts, zero mix balance
-drift, zero chunk seams—while reducing measurable AI-audio artifacts (stationary
+indistinguishable from the original (zero watery artifacts, zero mix balance
+drift, zero chunk seams) while reducing measurable AI-audio artifacts (stationary
 vocoder comb, high-frequency bandwidth cliff, static high-frequency phase locks,
 rigid machine timing, and leftover generator metadata).
 
 ## Non-Negotiable Rules
 
 1. **Audition first.** If you cannot access or directly listen to the audio, stop and tell the user before processing anything.
-2. **Never use watery spectral resynthesis or cheap MIDI swaps.** Do not use General MIDI / FluidSynth presets, STFT sinusoidal peak-tracking (`SMS`), broadband random-phase resynthesis, or STFT octave bin-copying above the HF cliff—these create watery "MP3 birdie" or metallic artifacts on exposed sections.
+2. **Never use watery spectral resynthesis or cheap MIDI swaps.** Do not use General MIDI / FluidSynth presets, STFT sinusoidal peak-tracking (`SMS`), broadband random-phase resynthesis, or STFT octave bin-copying above the HF cliff, because these create watery "MP3 birdie" or metallic artifacts on exposed sections.
 3. **Preserve stereo coherence and dynamics.** Never apply independent-channel time-warping (causes L/R phase drift/flanging), raw early-reflection room slap, chunked crossfade seams, or brickwall loudness slamming.
 4. **Stay honest about third-party detectors.** Never claim a SubmitHub or other external AI-detector score unless the user actually tests the exported file and reports the result. Report any local metrics separately.
 
 ## Workflow
 
-### Step 1 — Gather Inputs & Verify Environment
+### Step 1: Gather Inputs & Verify Environment
 Collect from the user (or infer from the workspace):
 - Original stereo mix WAV (`--input`)
 - Optional stems directory (`--stems-dir`) and target stem keyword (`--target-stem`, e.g., `Synth`)
@@ -41,7 +41,7 @@ Collect from the user (or infer from the workspace):
 
 Verify Python (`numpy`, `scipy`, `soundfile`) and `ffmpeg` (for ITU-R BS.1770-4 `ebur128` loudness/true-peak checks) are available.
 
-### Step 2 — Run the Audition Pass First (Default)
+### Step 2: Run the Audition Pass First (Default)
 Run the bundled self-contained DSP script [scripts/clean_analog_master.py](./scripts/clean_analog_master.py):
 
 ```bash
@@ -68,14 +68,14 @@ What the script enforces automatically:
   - Sub-protected (`>120 Hz`) Mid/Side 4×-oversampled Class-A mastering bus sheen (`11%` wet) + ultra-smooth **2049-tap Linear-Phase FIR** reference-sparkle balance trim (`±0.85 dB` max, keeping `30 Hz – 16 kHz` flat within `±0.08 dB` of original) + `-82 dBFS` 1/f natural analog floor.
 - **Strict LUFS-matched 24-bit TPDF export**: writes clean 44-byte 24-bit PCM WAVs with true 1-LSB triangular-PDF (TPDF) dither (plus optional `--also-float32` archival float export in `full` mode). In `audition` mode, exports `[Original 1] -> 1s silence -> [Processed 1] -> 2s silence -> [Original 2] -> 1s silence -> [Processed 2]`, loudness-matched per pair via `ffmpeg ebur128`.
 
-### Step 3 — Mandatory Ear Check & Ablation Gate
+### Step 3: Mandatory Ear Check & Ablation Gate
 Directly audition the exported clips (especially any quiet/exposed intro, hook, and vocal chorus). If you hear any dullness, phase shift, or artifacts:
 1. Run an ablation (`--skip-stem-reamp` vs. `--skip-mix-cleanup`) to isolate which stage caused it.
 2. Adjust only the offending stage and re-audition before sharing with the user.
 
 Present the comparison WAV, exact playback order, and before/after table, then wait for user approval before running the full render.
 
-### Step 4 — Render & QA-Verify the Full-Length 24-Bit Master
+### Step 4: Render & QA-Verify the Full-Length 24-Bit Master
 Once approved (or when full render is explicitly requested), run:
 
 ```bash
