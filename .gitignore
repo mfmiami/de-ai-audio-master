@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.wav
+*.flac
+*.mp3
+*.metadata.json
+out/
