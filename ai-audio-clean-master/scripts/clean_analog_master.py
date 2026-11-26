@@ -8,30 +8,35 @@
 # ]
 # ///
 """
-De-AI Audio Master: Standalone Zero-Artifact Time-Domain Cleanup & Linear-Phase Mastering CLI.
+De-AI Audio Master (v2.3): Standalone Zero-Artifact Time-Domain Cleanup & Linear-Phase Mastering CLI.
 
 Runs 100% locally on CPU with only numpy, scipy, and soundfile (ffmpeg is optional).
-Supports two genre-tuned profiles (plus automatic detection from stems):
+Supports two Hi-Fi genre-tuned profiles (plus automatic detection from stems) with 8x (384 kHz)
+oversampling on all non-linear stages, elliptical sub-bass mono tightening, and M/S stereo bloom:
 
 - electronic (default when Synth dominates or stereo-only):
   1. 87.5%-overlap exact additive 2-way Wiener stem split (vocal-guarded 1.4x, sub-90 Hz protected)
-  2. Target-stem Class-A saturation (>120 Hz) + Lanczos-4 BBD stereo chorus + warm BPM delay
-  3. Zero-STFT-framing full-mix chain: 4097-tap linear-phase comb FIR, envelope-gated HF air
-     exciter, allpass cascade, slow tonal breath, stereo-linked Lanczos-8 micro-tempo breath,
-     sub-protected M/S Class-A sheen, 2049-tap linear-phase reference balance trim, TPDF 24-bit WAV.
+  2. Target-stem 8x Class-A saturation (>120 Hz) + 12-tap Lanczos-6 BBD stereo chorus + warm BPM delay
+  3. Zero-STFT-framing full-mix chain: 4097-tap linear-phase comb FIR (<=2.4 dB), 8x-oversampled
+     analog air regeneration above 15.2 kHz (preserving open 4-15 kHz sparkle), analog allpass
+     cascade, slow tonal breath, stereo-linked Lanczos-8 micro-tempo breath, elliptical <95 Hz
+     sub-mono + M/S width bloom (+0.75 dB Side >350 Hz), 8x M/S Class-A sheen, 2049-tap linear-phase
+     mastering contour (+0.45 dB @ 55 Hz, -0.55 dB @ 240 Hz, +0.30 dB @ 9.5 kHz), 1.2% console
+     crosstalk, and 24-bit 1-LSB TPDF clean 44-byte WAV export.
 
 - rock (auto-selected when Guitar/Drums/Vocals dominate over Synth):
   1. 87.5%-overlap exact additive 4-way Wiener partition (Vocals + Drums + Guitar + Bass/Rest)
-  2. Per-stem studio rock chains:
-     * Vocals: dynamic de-ess + U47/Neve tone shaping + 4x tube preamp + 5% stereo studio plate
-     * Drums:  20% New York parallel tape drum bus + 6.5% stereo drum room + cymbal allpass
-     * Guitar: minimum-phase 4x12 cab curve (7.8 kHz cone rolloff) + Class-A tube warmth + micro-width
-     * Bass:   clean 5.2 kHz LP (strips ultrasonic shelf & 50 Hz codec spike) + analog mid-growl
-  3. Full-mix rock chain: 4097-tap linear-phase comb FIR, 15-ips tape rolloff (12.2 kHz) +
-     envelope-gated 4x-oversampled analog HF harmonic regeneration, 5-stage allpass dispersion,
-     4.2% tight shared live-room glue, gentle 3-band analog bus glue, classic +1.15% tape varispeed
-     (configurable via --varispeed-pct) + human drummer phrase/bar pocket via Lanczos-8, M/S Class-A
-     sheen, 2% console crosstalk, and 24-bit 1-LSB TPDF clean 44-byte WAV export.
+  2. Per-stem 8x-oversampled studio rock chains:
+     * Vocals: dynamic de-ess + U47/Neve tone shaping + 8x tube preamp + 5% stereo studio plate
+     * Drums:  20% New York parallel 8x tape drum bus + 6.5% stereo drum room + cymbal allpass
+     * Guitar: minimum-phase 4x12 cab curve (7.8 kHz cone rolloff) + 8x Class-A tube warmth + width
+     * Bass:   clean 5.2 kHz LP (strips ultrasonic shelf & 50 Hz codec spike) + 8x analog mid-growl
+  3. Full-mix rock chain: 4097-tap linear-phase comb FIR (<=3.0 dB), 15-ips tape rolloff (10.5 kHz)
+     + 8x-oversampled envelope-gated analog HF harmonic regeneration, 5-stage allpass dispersion,
+     4.2% tight shared live-room glue, 1.8:1 3-band analog bus glue, -1.1 dB @ 180 Hz de-mud scoop,
+     classic +1.15% tape varispeed (configurable via --varispeed-pct) + human drummer phrase/bar
+     pocket via Lanczos-8, elliptical <105 Hz sub-mono + M/S width bloom (+0.70 dB Side >300 Hz),
+     8x M/S Class-A sheen, 2% console crosstalk, and 24-bit 1-LSB TPDF clean 44-byte WAV export.
 """
 
 import argparse
@@ -192,11 +197,7 @@ def estimate_bpm(x_stereo, sr, drums_stereo=None):
 
 
 def detect_profile_from_stems(stems):
-    """
-    Auto-detect 'rock' vs 'electronic' from stem RMS energy balance:
-    - If Guitar outweighs Synth by >= 3 dB, or Drums+Vocals strongly outweigh Synth (>10 dB), select 'rock'.
-    - Otherwise select 'electronic'.
-    """
+    """Auto-detect 'rock' vs 'electronic' from stem RMS energy balance."""
     if not stems:
         return "electronic"
 
@@ -428,6 +429,17 @@ def peaking_eq(x, sr, fc, q, gain_db):
     return signal.lfilter(b, a, x, axis=0)
 
 
+def elliptical_sub_mono_and_ms_bloom(x, sr, sub_hz=100.0, side_lift_db=0.70, bloom_hp_hz=320.0):
+    """Elliptical mastering filter: tightens sub (<sub_hz Side -8 dB) and adds clean Side bloom (>bloom_hp_hz)."""
+    M = 0.5 * (x[:, 0] + x[:, 1])
+    S = 0.5 * (x[:, 0] - x[:, 1])
+    S_sub = signal.sosfiltfilt(signal.butter(4, sub_hz, btype="lowpass", fs=sr, output="sos"), S)
+    S_hi = signal.sosfiltfilt(signal.butter(4, bloom_hp_hz, btype="highpass", fs=sr, output="sos"), S)
+    S_mid = S - S_sub - S_hi
+    S_out = (10.0 ** (-8.0 / 20.0)) * S_sub + S_mid + (10.0 ** (side_lift_db / 20.0)) * S_hi
+    return np.stack([M + S_out, M - S_out], axis=1)
+
+
 def make_diffused_stereo_ir(sr, rt60_s=0.35, predelay_ms=15.0, hp_hz=250.0, lp_hz=7500.0, seed=101):
     """Build a dense, smooth, zero-ringing stereo studio room/plate IR."""
     rng = np.random.default_rng(seed)
@@ -462,8 +474,8 @@ def apply_stereo_ir(x, ir, wet=0.06):
     return y
 
 
-def oversampled_class_a_sat(x, sr, drive=1.45, asym=0.035, wet=0.22, hp_protect_hz=120.0, ms_mode=False, os_factor=4):
-    """4x oversampled Class-A asymmetric triode/tape saturation with sub-bass protection (>hp_protect_hz)."""
+def oversampled_class_a_sat(x, sr, drive=1.45, asym=0.035, wet=0.22, hp_protect_hz=120.0, ms_mode=False, os_factor=8):
+    """Oversampled (default 8x / 384 kHz) Class-A asymmetric triode/tape saturation with sub-bass protection."""
     N = len(x)
     if hp_protect_hz and hp_protect_hz > 25.0:
         sos_lp = signal.butter(4, hp_protect_hz, btype="lowpass", fs=sr, output="sos")
@@ -529,27 +541,27 @@ def lanczos_resample_variable(x_ch, read_pos, a_lz=4):
     return out
 
 
-def time_domain_bbd_chorus_hq(x, sr, hp_hz=900.0, base_ms=6.2, depth_ms=1.8, rate_hz=0.34, wet=0.14):
-    """Pure time-domain quadrature Juno-style BBD stereo chorus using 8-tap Lanczos-4 sinc interpolation."""
+def time_domain_bbd_chorus_hq(x, sr, hp_hz=900.0, base_ms=6.2, depth_ms=1.8, rate_hz=0.34, wet=0.14, a_lz=6, lp_cap=14500.0):
+    """Pure time-domain quadrature Juno-style BBD stereo chorus using Lanczos-a sinc interpolation."""
     N = len(x)
     sos_hp = signal.butter(4, hp_hz, btype="highpass", fs=sr, output="sos")
     x_hi = signal.sosfiltfilt(sos_hp, x, axis=0)
     t = np.arange(N, dtype=np.float64)
     d_L = (base_ms + depth_ms * np.sin(2.0 * np.pi * rate_hz * (t / sr))) * (sr / 1000.0)
     d_R = (base_ms + depth_ms * np.cos(2.0 * np.pi * rate_hz * (t / sr))) * (sr / 1000.0)
-    y_L = lanczos_resample_variable(x_hi[:, 0], np.clip(t - d_L, 0.0, N - 1.001), a_lz=4)
-    y_R = lanczos_resample_variable(x_hi[:, 1], np.clip(t - d_R, 0.0, N - 1.001), a_lz=4)
+    y_L = lanczos_resample_variable(x_hi[:, 0], np.clip(t - d_L, 0.0, N - 1.001), a_lz=a_lz)
+    y_R = lanczos_resample_variable(x_hi[:, 1], np.clip(t - d_R, 0.0, N - 1.001), a_lz=a_lz)
     y_ch = np.stack([y_L, y_R], axis=1)
-    lp_hz = min(13500.0, sr * 0.44)
+    lp_hz = min(lp_cap, sr * 0.44)
     sos_lp = signal.butter(2, lp_hz, btype="lowpass", fs=sr, output="sos")
     y_ch = signal.sosfiltfilt(sos_lp, y_ch, axis=0)
     return x + wet * y_ch
 
 
-def reamp_stem_time_domain(xs, sr, bpm):
-    """Electronic profile isolated target-stem re-amp."""
-    s = oversampled_class_a_sat(xs, sr, drive=1.50, asym=0.036, wet=0.26, hp_protect_hz=120.0, ms_mode=True, os_factor=4)
-    s = time_domain_bbd_chorus_hq(s, sr, hp_hz=900.0, base_ms=6.2, depth_ms=1.8, rate_hz=0.34, wet=0.13)
+def reamp_stem_time_domain(xs, sr, bpm, os_factor=8):
+    """Electronic profile isolated target-stem Hi-Fi re-amp (8x Class-A + Lanczos-6 BBD chorus)."""
+    s = oversampled_class_a_sat(xs, sr, drive=1.52, asym=0.036, wet=0.26, hp_protect_hz=120.0, ms_mode=True, os_factor=os_factor)
+    s = time_domain_bbd_chorus_hq(s, sr, hp_hz=900.0, base_ms=6.2, depth_ms=1.8, rate_hz=0.34, wet=0.13, a_lz=6, lp_cap=14500.0)
     d1 = int(round(sr * (60.0 / bpm) * 0.5))
     d2 = int(round(sr * (60.0 / bpm) * 0.75))
     if d2 < len(s):
@@ -563,34 +575,34 @@ def reamp_stem_time_domain(xs, sr, bpm):
     return s
 
 
-def parallel_tape_drum_crush(xd, sr, wet=0.20):
-    """New York parallel compressed + tape-saturated drum bus."""
+def parallel_tape_drum_crush(xd, sr, wet=0.20, os_factor=8):
+    """New York parallel compressed + oversampled tape-saturated drum bus."""
     mono = 0.5 * (xd[:, 0] + xd[:, 1])
     env = np.sqrt(np.maximum(signal.sosfilt(signal.butter(2, 14.0, btype="lowpass", fs=sr, output="sos"), mono ** 2), 1e-12))
     thr = float(np.percentile(env, 65)) + 1e-6
     gain = np.maximum(env / thr, 1.0) ** (1.0 / 3.5 - 1.0)
     gain = signal.sosfilt(signal.butter(2, 22.0, btype="lowpass", fs=sr, output="sos"), gain)
     comp = xd * gain[:, None]
-    comp = oversampled_class_a_sat(comp, sr, drive=1.85, asym=0.035, wet=0.45, hp_protect_hz=100.0, ms_mode=True, os_factor=4)
+    comp = oversampled_class_a_sat(comp, sr, drive=1.85, asym=0.035, wet=0.45, hp_protect_hz=100.0, ms_mode=True, os_factor=os_factor)
     comp = signal.sosfiltfilt(signal.butter(2, min(10500.0, sr * 0.42), btype="lowpass", fs=sr, output="sos"), comp, axis=0)
     comp *= np.sqrt(np.mean(xd ** 2)) / (np.sqrt(np.mean(comp ** 2)) + 1e-12)
     return (1.0 - wet) * xd + wet * comp
 
 
-def guitar_4x12_cab_chain(xg, sr):
+def guitar_4x12_cab_chain(xg, sr, os_factor=8):
     """Minimum-phase 4x12 speaker cabinet curve (7.8 kHz cone rolloff) + Class-A tube warmth."""
-    y = peaking_eq(xg, sr, 118.0, 1.4, +1.4)
+    y = peaking_eq(xg, sr, 118.0, 1.4, +1.2)
     y = peaking_eq(y, sr, 420.0, 1.2, -1.2)
-    y = peaking_eq(y, sr, 2350.0, 1.3, +1.5)
+    y = peaking_eq(y, sr, 2350.0, 1.3, +1.6)
     y = peaking_eq(y, sr, 4300.0, 2.2, -2.0)
     y = signal.sosfiltfilt(signal.butter(3, min(7800.0, sr * 0.40), btype="lowpass", fs=sr, output="sos"), y, axis=0)
-    y = oversampled_class_a_sat(y, sr, drive=1.82, asym=0.050, wet=0.34, hp_protect_hz=115.0, ms_mode=True, os_factor=4)
-    y = time_domain_bbd_chorus_hq(y, sr, hp_hz=900.0, base_ms=5.5, depth_ms=1.4, rate_hz=0.31, wet=0.09)
+    y = oversampled_class_a_sat(y, sr, drive=1.82, asym=0.050, wet=0.34, hp_protect_hz=115.0, ms_mode=True, os_factor=os_factor)
+    y = time_domain_bbd_chorus_hq(y, sr, hp_hz=900.0, base_ms=5.5, depth_ms=1.4, rate_hz=0.31, wet=0.09, a_lz=4, lp_cap=13500.0)
     return y
 
 
-def u47_rock_vocal_chain(xv, sr):
-    """Dynamic de-ess + U47/Neve tone shaping + 4x tube preamp + 5% studio vocal plate."""
+def u47_rock_vocal_chain(xv, sr, os_factor=8):
+    """Dynamic de-ess + U47/Neve tone shaping + oversampled tube preamp + 5% studio vocal plate."""
     sos_sib = signal.butter(3, [6500.0, min(11500.0, sr * 0.44)], btype="bandpass", fs=sr, output="sos")
     sib = signal.sosfiltfilt(sos_sib, xv, axis=0)
     env = np.sqrt(np.maximum(signal.sosfiltfilt(signal.butter(2, 28.0, btype="lowpass", fs=sr, output="sos"),
@@ -599,29 +611,29 @@ def u47_rock_vocal_chain(xv, sr):
     att = np.clip((env / thr) ** -0.45, 0.55, 1.0)[:, None]
     y = (xv - sib) + sib * att
 
-    y = peaking_eq(y, sr, 220.0, 1.0, +0.8)
-    y = peaking_eq(y, sr, 2000.0, 1.2, +0.6)
+    y = peaking_eq(y, sr, 220.0, 1.0, +0.6)
+    y = peaking_eq(y, sr, 2000.0, 1.2, +0.7)
     y = peaking_eq(y, sr, 3850.0, 1.5, -1.0)
     y = peaking_eq(y, sr, 9600.0, 1.2, -1.3)
-    y = oversampled_class_a_sat(y, sr, drive=1.48, asym=0.052, wet=0.28, hp_protect_hz=150.0, ms_mode=False, os_factor=4)
+    y = oversampled_class_a_sat(y, sr, drive=1.48, asym=0.052, wet=0.28, hp_protect_hz=150.0, ms_mode=False, os_factor=os_factor)
     plate_ir = make_diffused_stereo_ir(sr, rt60_s=0.36, predelay_ms=18.0, hp_hz=420.0, lp_hz=8500.0, seed=101)
     y = apply_stereo_ir(y, plate_ir, wet=0.050)
     y = analog_allpass_cascade(y, sr, freqs_L=(2900.0, 6100.0, 10400.0), freqs_R=(3250.0, 6650.0, 11300.0), q=0.68)
     return y
 
 
-def reamp_stems_rock(orig, sr, stems):
-    """Rock profile 4-way Wiener partition + per-stem studio chains (exact RMS preserved per stem)."""
+def reamp_stems_rock(orig, sr, stems, os_factor=8):
+    """Rock profile 4-way Wiener partition + 8x-oversampled per-stem studio chains."""
     xv, xd, xg, xr = split_4way_wiener(orig, sr, stems)
 
     if np.std(xv) > 1e-6:
-        v_proc = u47_rock_vocal_chain(xv, sr)
+        v_proc = u47_rock_vocal_chain(xv, sr, os_factor=os_factor)
         v_proc *= np.sqrt(np.mean(xv ** 2)) / (np.sqrt(np.mean(v_proc ** 2)) + 1e-12)
     else:
         v_proc = xv
 
     if np.std(xd) > 1e-6:
-        d_proc = parallel_tape_drum_crush(xd, sr, wet=0.20)
+        d_proc = parallel_tape_drum_crush(xd, sr, wet=0.20, os_factor=os_factor)
         room_ir = make_diffused_stereo_ir(sr, rt60_s=0.30, predelay_ms=10.0, hp_hz=250.0, lp_hz=9200.0, seed=202)
         d_proc = apply_stereo_ir(d_proc, room_ir, wet=0.065)
         d_proc = analog_allpass_cascade(d_proc, sr, freqs_L=(4200.0, 7800.0, 12400.0), freqs_R=(4650.0, 8500.0, 13300.0), q=0.70)
@@ -630,14 +642,14 @@ def reamp_stems_rock(orig, sr, stems):
         d_proc = xd
 
     if np.std(xg) > 1e-6:
-        g_proc = guitar_4x12_cab_chain(xg, sr)
+        g_proc = guitar_4x12_cab_chain(xg, sr, os_factor=os_factor)
         g_proc *= np.sqrt(np.mean(xg ** 2)) / (np.sqrt(np.mean(g_proc ** 2)) + 1e-12)
     else:
         g_proc = xg
 
     if np.std(xr) > 1e-6:
         r_proc = signal.sosfiltfilt(signal.butter(4, min(5200.0, sr * 0.35), btype="lowpass", fs=sr, output="sos"), xr, axis=0)
-        r_proc = oversampled_class_a_sat(r_proc, sr, drive=1.40, asym=0.028, wet=0.22, hp_protect_hz=120.0, ms_mode=False, os_factor=4)
+        r_proc = oversampled_class_a_sat(r_proc, sr, drive=1.40, asym=0.028, wet=0.22, hp_protect_hz=120.0, ms_mode=False, os_factor=os_factor)
         r_proc *= np.sqrt(np.mean(xr ** 2)) / (np.sqrt(np.mean(r_proc ** 2)) + 1e-12)
     else:
         r_proc = xr
@@ -660,7 +672,7 @@ def detect_hf_cliff_hz(x_full, sr):
     return best_hz, best_drop
 
 
-def build_linear_phase_comb_fir(x_full, sr, max_cut_db=2.2, fir_taps=4097):
+def build_linear_phase_comb_fir(x_full, sr, max_cut_db=2.4, fir_taps=4097):
     """Build an exact 0.000-degree Linear-Phase Blackman-windowed FIR for conservative comb flattening."""
     n_fft, hop = 16384, 4096
     win = signal.windows.hann(n_fft, sym=False)
@@ -685,7 +697,7 @@ def build_linear_phase_comb_fir(x_full, sr, max_cut_db=2.2, fir_taps=4097):
 
         k_sm = 401
         avg_loss_db = np.convolve(cut_db, np.ones(k_sm) / k_sm, mode="same")
-        g_bal = g_raw * (10.0 ** (np.clip(avg_loss_db, 0.0, 0.65) / 20.0))
+        g_bal = g_raw * (10.0 ** (np.clip(avg_loss_db, 0.0, 0.72) / 20.0))
 
         if ch == 0:
             print(f"  [Comb-FIR] Linear-phase FIR ({fir_taps} taps): {int(np.sum(cut_db > 0.2))} narrow comb bins (max -{cut_db.max():.2f} dB, broadband restore max +{avg_loss_db.max():.2f} dB)")
@@ -707,80 +719,48 @@ def apply_linear_phase_fir(x, h_kernels):
     return y
 
 
-def apply_reference_sparkle_fir(y_proc, x_ref, sr, fir_taps=2049, max_db=0.85):
-    """Gentle broad (~1-octave) linear-phase FIR balance trim (60 Hz - 18.2 kHz)."""
+def linear_phase_elec_mastering_contour(y, x_ref, sr, fir_taps=2049):
+    """
+    Linear-phase mastering console contour for electronic tracks:
+    Anchors 30 Hz - 15 kHz to reference + subtle mastering polish (+0.45 dB @ 55 Hz tight sub,
+    -0.55 dB @ 240 Hz low-mid de-mud, +0.30 dB @ 9.5 kHz open air).
+    """
     n_fft = 8192
     freqs = np.linspace(0.0, sr / 2.0, n_fft // 2 + 1)
     log_f = np.log2(np.maximum(freqs, 20.0))
-    anchors = np.array([70.0, 160.0, 380.0, 900.0, 2000.0, 4500.0, 9500.0, 15500.0])
+    anchors = np.array([55.0, 120.0, 240.0, 600.0, 1600.0, 4200.0, 9500.0, 14500.0])
+    polish_db = np.array([+0.45, 0.0, -0.55, -0.15, 0.0, +0.10, +0.30, +0.20])
     f_w, Pr = signal.welch(0.5 * (x_ref[:, 0] + x_ref[:, 1]), sr, nperseg=4096)
-    _, Pp = signal.welch(0.5 * (y_proc[:, 0] + y_proc[:, 1]), sr, nperseg=4096)
+    _, Pp = signal.welch(0.5 * (y[:, 0] + y[:, 1]), sr, nperseg=4096)
     d_anc = np.zeros(len(anchors), dtype=np.float64)
     for i, fc in enumerate(anchors):
         m = (f_w >= fc * 0.72) & (f_w <= fc * 1.38)
         if np.any(m):
-            d_anc[i] = float(np.clip(10.0 * np.log10((np.sum(Pr[m]) + 1e-20) / (np.sum(Pp[m]) + 1e-20)), -max_db, max_db))
-    w = np.exp(-0.5 * ((log_f[:, None] - np.log2(anchors)[None, :]) / 0.72) ** 2)
+            raw = 10.0 * np.log10((np.sum(Pr[m]) + 1e-20) / (np.sum(Pp[m]) + 1e-20))
+            d_anc[i] = float(np.clip(raw + polish_db[i], -1.2, 1.2))
+    w = np.exp(-0.5 * ((log_f[:, None] - np.log2(anchors)[None, :]) / 0.68) ** 2)
     w /= (np.sum(w, axis=1, keepdims=True) + 1e-8)
-    fade = np.clip((freqs - 45.0) / 35.0, 0.0, 1.0) * np.clip((19500.0 - freqs) / 2500.0, 0.0, 1.0)
+    fade = np.clip((freqs - 35.0) / 25.0, 0.0, 1.0) * np.clip((18500.0 - freqs) / 3000.0, 0.0, 1.0)
     H = 10.0 ** (((w @ d_anc) * fade) / 20.0)
     h_full = np.fft.fftshift(np.fft.irfft(H, n=n_fft))
     mid, half = n_fft // 2, fir_taps // 2
     h_fir = h_full[mid - half:mid + half + 1] * signal.windows.blackman(fir_taps)
-    out = np.empty_like(y_proc)
+    out = np.empty_like(y)
     for ch in range(2):
-        out[:, ch] = signal.fftconvolve(y_proc[:, ch], h_fir, mode="same")
+        out[:, ch] = signal.fftconvolve(y[:, ch], h_fir, mode="same")
     return out
 
 
-def time_domain_envelope_air_exciter(x, sr, cliff_hz=18000.0, mix=0.46):
-    """Envelope-following 4x-oversampled time-domain harmonic air exciter above the HF cliff."""
+def elec_air_regenerate(x, sr, xover_hz=15200.0, air_mix=0.78, os_factor=8):
+    """Oversampled (default 8x / 384 kHz) silky electronic air above 15.2 kHz (keeps 4-15 kHz open)."""
     nyq = sr / 2.0
-    out_hp = min(max(cliff_hz - 400.0, 14500.0), nyq - 2500.0)
-    out_lp = min(nyq - 1200.0, 22800.0)
-    if out_lp <= out_hp + 500.0:
-        return x
-    src_lo = max(out_hp * 0.5, 7500.0)
-    src_hi = min(out_hp * 0.85, nyq - 3000.0)
-    sos_bp = signal.butter(4, [src_lo, src_hi], btype="bandpass", fs=sr, output="sos")
-    src = signal.sosfiltfilt(sos_bp, x, axis=0)
-    N = len(x)
-    air = np.empty_like(x)
-    blk, pad = 262144, 1024
-    for s0 in range(0, N, blk):
-        s1 = min(N, s0 + blk)
-        a, b = max(0, s0 - pad), min(N, s1 + pad)
-        seg = src[a:b]
-        rms = max(float(np.sqrt(np.mean(seg ** 2))), 1e-6)
-        o0 = s0 - a
-        for ch in range(2):
-            up = signal.resample_poly(seg[:, ch] / rms, 4, 1)
-            exc = np.sqrt(up * up + 0.04) - 0.2 + 0.14 * np.tanh(2.4 * up)
-            dn = signal.resample_poly(exc, 1, 4)[:len(seg)] * rms
-            air[s0:s1, ch] = dn[o0:o0 + (s1 - s0)]
-    sos_out = signal.butter(4, [out_hp, out_lp], btype="bandpass", fs=sr, output="sos")
-    air = signal.sosfiltfilt(sos_out, air, axis=0)
-
-    env_sq = signal.sosfiltfilt(signal.butter(2, 25.0, btype="lowpass", fs=sr, output="sos"),
-                                np.mean(src ** 2, axis=1))
-    env = np.sqrt(np.maximum(env_sq, 0.0))
-    ref_e = float(np.percentile(env, 75)) + 1e-9
-    gate = np.clip(env / (ref_e * 0.15), 0.0, 1.0)[:, None]
-    return x + mix * (air * gate)
-
-
-def analog_tape_hf_regenerate(x, sr, xover_hz=12200.0, air_mix=0.68):
-    """15-ips tape rolloff + envelope-gated 4x-oversampled analog harmonic regeneration above xover_hz."""
-    nyq = sr / 2.0
-    if nyq < xover_hz + 3500.0:
+    if nyq < xover_hz + 2500.0:
         return x
     N = len(x)
-    sos_lo = signal.butter(4, xover_hz, btype="lowpass", fs=sr, output="sos")
-    x_tape = signal.sosfiltfilt(sos_lo, x, axis=0)
-    x_base = 0.82 * x_tape + 0.18 * x
+    x_lo = signal.sosfiltfilt(signal.butter(4, xover_hz, btype="lowpass", fs=sr, output="sos"), x, axis=0)
+    x_base = 0.45 * x_lo + 0.55 * x
 
-    sos_src = signal.butter(4, [5600.0, min(12000.0, xover_hz - 200.0)], btype="bandpass", fs=sr, output="sos")
-    src = signal.sosfiltfilt(sos_src, x_tape, axis=0)
+    src = signal.sosfiltfilt(signal.butter(4, [7200.0, min(14800.0, xover_hz - 400.0)], btype="bandpass", fs=sr, output="sos"), x_lo, axis=0)
     harm = np.empty_like(x)
     blk, pad = 262144, 1024
     for s0 in range(0, N, blk):
@@ -790,16 +770,54 @@ def analog_tape_hf_regenerate(x, sr, xover_hz=12200.0, air_mix=0.68):
         rms = max(float(np.sqrt(np.mean(seg ** 2))), 1e-6)
         o0 = s0 - a
         for ch in range(2):
-            u = signal.resample_poly(seg[:, ch] / rms, 4, 1)
-            exc = (np.sqrt(u * u + 0.08) - math.sqrt(0.08)) + 0.22 * np.tanh(1.9 * u)
-            dn = signal.resample_poly(exc, 1, 4)[:len(seg)] * rms
+            u = signal.resample_poly(seg[:, ch] / rms, os_factor, 1)
+            exc = (np.sqrt(u * u + 0.06) - math.sqrt(0.06)) + 0.16 * np.tanh(2.0 * u)
+            dn = signal.resample_poly(exc, 1, os_factor)[:len(seg)] * rms
+            harm[s0:s1, ch] = dn[o0:o0 + (s1 - s0)]
+
+    out_lp = min(22400.0, nyq - 1200.0)
+    harm = signal.sosfiltfilt(signal.butter(4, [xover_hz, out_lp], btype="bandpass", fs=sr, output="sos"), harm, axis=0)
+    env_sq = signal.sosfiltfilt(signal.butter(2, 26.0, btype="lowpass", fs=sr, output="sos"), np.mean(src ** 2, axis=1))
+    env = np.sqrt(np.maximum(env_sq, 0.0))
+    ref_e = float(np.percentile(env, 75)) + 1e-9
+    gate = np.clip(env / (ref_e * 0.15), 0.0, 1.0)[:, None]
+
+    orig_hi = signal.sosfiltfilt(signal.butter(4, [xover_hz, min(19200.0, nyq - 1500.0)], btype="bandpass", fs=sr, output="sos"), x, axis=0)
+    orig_hi_rms = float(np.sqrt(np.mean(orig_hi ** 2))) + 1e-9
+    harm_g = harm * gate
+    harm_rms = float(np.sqrt(np.mean(harm_g ** 2))) + 1e-9
+    return x_base + harm_g * (orig_hi_rms / harm_rms) * air_mix
+
+
+def rock_tape_hf_regenerate(x, sr, xover_hz=10500.0, air_mix=0.84, os_factor=8):
+    """15-ips tape rolloff at 10.5 kHz + 8x-oversampled envelope-gated analog HF harmonic regeneration."""
+    nyq = sr / 2.0
+    if nyq < xover_hz + 3500.0:
+        return x
+    N = len(x)
+    x_tape = signal.sosfiltfilt(signal.butter(4, xover_hz, btype="lowpass", fs=sr, output="sos"), x, axis=0)
+    x_base = 0.90 * x_tape + 0.10 * x
+
+    src = signal.sosfiltfilt(signal.butter(4, [4600.0, xover_hz - 200.0], btype="bandpass", fs=sr, output="sos"), x_tape, axis=0)
+    harm = np.empty_like(x)
+    blk, pad = 262144, 1024
+    for s0 in range(0, N, blk):
+        s1 = min(N, s0 + blk)
+        a, b = max(0, s0 - pad), min(N, s1 + pad)
+        seg = src[a:b]
+        rms = max(float(np.sqrt(np.mean(seg ** 2))), 1e-6)
+        o0 = s0 - a
+        for ch in range(2):
+            u = signal.resample_poly(seg[:, ch] / rms, os_factor, 1)
+            exc = (np.sqrt(u * u + 0.10) - math.sqrt(0.10)) + 0.18 * np.tanh(1.7 * u)
+            dn = signal.resample_poly(exc, 1, os_factor)[:len(seg)] * rms
             harm[s0:s1, ch] = dn[o0:o0 + (s1 - s0)]
 
     harm = signal.sosfiltfilt(signal.butter(4, xover_hz, btype="highpass", fs=sr, output="sos"), harm, axis=0)
-    harm = signal.sosfiltfilt(signal.butter(2, min(16800.0, nyq - 2500.0), btype="lowpass", fs=sr, output="sos"), harm, axis=0)
+    harm = signal.sosfiltfilt(signal.butter(2, min(16500.0, nyq - 2500.0), btype="lowpass", fs=sr, output="sos"), harm, axis=0)
     harm = signal.sosfiltfilt(signal.butter(3, xover_hz, btype="highpass", fs=sr, output="sos"), harm, axis=0)
 
-    env_sq = signal.sosfiltfilt(signal.butter(2, 28.0, btype="lowpass", fs=sr, output="sos"), np.mean(src ** 2, axis=1))
+    env_sq = signal.sosfiltfilt(signal.butter(2, 30.0, btype="lowpass", fs=sr, output="sos"), np.mean(src ** 2, axis=1))
     env = np.sqrt(np.maximum(env_sq, 0.0))
     ref_e = float(np.percentile(env, 75)) + 1e-9
     gate = np.clip(env / (ref_e * 0.16), 0.0, 1.0)[:, None]
@@ -828,7 +846,7 @@ def multiband_analog_glue(x, sr):
     return comp_band(b_lo, 5.0, 1.7, 1.4, 70) + comp_band(b_mid, 9.0, 1.8, 1.6, 68) + comp_band(b_hi, 14.0, 1.9, 1.8, 72)
 
 
-def analog_allpass_cascade(x, sr, freqs_L=(5800.0, 9400.0, 13800.0), freqs_R=(6250.0, 10100.0, 14600.0), q=0.72):
+def analog_allpass_cascade(x, sr, freqs_L=(5400.0, 9100.0, 13600.0), freqs_R=(5850.0, 9800.0, 14500.0), q=0.72):
     y = x.copy()
     nyq = sr / 2.0
     for ch, flist in [(0, freqs_L), (1, freqs_R)]:
@@ -860,7 +878,7 @@ def time_domain_slow_mastering_breath(x, sr, max_db=0.40, seed=2026):
     return y
 
 
-def stereo_linked_lanczos8_timing_breath(x, sr, max_rate=0.0011, varispeed_pct=0.0, phrase_pct=0.0, bar_pct=0.0, seed=2026):
+def stereo_linked_lanczos8_timing_breath(x, sr, max_rate=0.0012, varispeed_pct=0.0, phrase_pct=0.0, bar_pct=0.0, seed=2026):
     """Stereo-linked Lanczos-8 timing breath + optional analog tape varispeed & drummer phrase/bar pocket."""
     rng = np.random.default_rng(seed)
     N_in = len(x)
@@ -898,15 +916,17 @@ def stereo_linked_lanczos8_timing_breath(x, sr, max_rate=0.0011, varispeed_pct=0
     return np.stack([y_L, y_R], axis=1)
 
 
-def apply_full_mix_cleanup_electronic(x, x_ref, sr, comb_firs, cliff_hz, varispeed_pct=0.0, seed=2026):
+def apply_full_mix_cleanup_electronic(x, x_ref, sr, comb_firs, varispeed_pct=0.0, os_factor=8, seed=2026):
     y = apply_linear_phase_fir(x, comb_firs)
-    y = time_domain_envelope_air_exciter(y, sr, cliff_hz=cliff_hz, mix=0.46)
-    y = analog_allpass_cascade(y, sr)
+    y = elec_air_regenerate(y, sr, xover_hz=15200.0, air_mix=0.78, os_factor=os_factor)
+    y = analog_allpass_cascade(y, sr, freqs_L=(5400.0, 9100.0, 13600.0), freqs_R=(5850.0, 9800.0, 14500.0), q=0.72)
     y = time_domain_slow_mastering_breath(y, sr, max_db=0.40, seed=seed)
-    y = stereo_linked_lanczos8_timing_breath(y, sr, max_rate=0.0011, varispeed_pct=varispeed_pct, seed=seed)
-    y = oversampled_class_a_sat(y, sr, drive=1.22, asym=0.015, wet=0.11, hp_protect_hz=120.0, ms_mode=True, os_factor=4)
-    y = apply_reference_sparkle_fir(y, x_ref, sr, fir_taps=2049, max_db=0.85)
-    rng = np.random.default_rng(seed + 5555)
+    y = stereo_linked_lanczos8_timing_breath(y, sr, max_rate=0.0012, varispeed_pct=varispeed_pct, seed=seed)
+    y = elliptical_sub_mono_and_ms_bloom(y, sr, sub_hz=95.0, side_lift_db=0.75, bloom_hp_hz=350.0)
+    y = oversampled_class_a_sat(y, sr, drive=1.22, asym=0.015, wet=0.11, hp_protect_hz=120.0, ms_mode=True, os_factor=os_factor)
+    y = linear_phase_elec_mastering_contour(y, x_ref, sr, fir_taps=2049)
+    y = np.stack([0.988 * y[:, 0] + 0.012 * y[:, 1], 0.988 * y[:, 1] + 0.012 * y[:, 0]], axis=1)
+    rng = np.random.default_rng(seed + 3540)
     N = len(y)
     for ch in range(2):
         w = rng.standard_normal(N)
@@ -917,19 +937,21 @@ def apply_full_mix_cleanup_electronic(x, x_ref, sr, comb_firs, cliff_hz, varispe
     return y
 
 
-def apply_full_mix_cleanup_rock(x, sr, comb_firs, varispeed_pct=1.15, seed=2026):
+def apply_full_mix_cleanup_rock(x, sr, comb_firs, varispeed_pct=1.15, os_factor=8, seed=2026):
     y = apply_linear_phase_fir(x, comb_firs)
-    y = analog_tape_hf_regenerate(y, sr, xover_hz=12200.0, air_mix=0.68)
+    y = rock_tape_hf_regenerate(y, sr, xover_hz=10500.0, air_mix=0.84, os_factor=os_factor)
     y = analog_allpass_cascade(y, sr, freqs_L=(3200.0, 5500.0, 8400.0, 11900.0, 15500.0),
                                freqs_R=(3550.0, 6050.0, 9150.0, 12700.0, 16400.0), q=0.72)
     y = time_domain_slow_mastering_breath(y, sr, max_db=0.45, seed=seed)
-    live_ir = make_diffused_stereo_ir(sr, rt60_s=0.18, predelay_ms=6.0, hp_hz=240.0, lp_hz=10500.0, seed=303)
+    live_ir = make_diffused_stereo_ir(sr, rt60_s=0.18, predelay_ms=6.0, hp_hz=260.0, lp_hz=10500.0, seed=303)
     y = apply_stereo_ir(y, live_ir, wet=0.042)
     y = multiband_analog_glue(y, sr)
+    y = peaking_eq(y, sr, 180.0, 1.0, -1.1)
     y = stereo_linked_lanczos8_timing_breath(y, sr, varispeed_pct=varispeed_pct, phrase_pct=0.80, bar_pct=0.45, seed=seed + 5145)
-    y = oversampled_class_a_sat(y, sr, drive=1.28, asym=0.020, wet=0.14, hp_protect_hz=120.0, ms_mode=True, os_factor=4)
+    y = elliptical_sub_mono_and_ms_bloom(y, sr, sub_hz=105.0, side_lift_db=0.70, bloom_hp_hz=300.0)
+    y = oversampled_class_a_sat(y, sr, drive=1.28, asym=0.020, wet=0.14, hp_protect_hz=120.0, ms_mode=True, os_factor=os_factor)
     y = np.stack([0.98 * y[:, 0] + 0.02 * y[:, 1], 0.98 * y[:, 1] + 0.02 * y[:, 0]], axis=1)
-    rng = np.random.default_rng(seed + 5448)
+    rng = np.random.default_rng(seed + 5650)
     N = len(y)
     for ch in range(2):
         w = rng.standard_normal(N)
@@ -997,6 +1019,7 @@ def process_track(
     target_stem="auto",
     profile="auto",
     varispeed_pct=None,
+    oversample=8,
     bpm=None,
     audition_ranges="auto",
     mode="audition",
@@ -1011,8 +1034,9 @@ def process_track(
     t0 = time.time()
     stem_base = os.path.splitext(os.path.basename(input_path))[0]
     lufs_backend = "python-bs1770" if (force_python_lufs or not _HAS_FFMPEG) else "ffmpeg-ebur128"
+    os_factor = 4 if int(oversample) <= 4 else 8
 
-    print(f"1. Loading original: {input_path} (loudness engine: {lufs_backend})")
+    print(f"1. Loading original: {input_path} (loudness engine: {lufs_backend}, oversampling: {os_factor}x)")
     orig, sr = sf.read(input_path, dtype="float64")
     if orig.ndim == 1:
         orig = np.stack([orig, orig], axis=1)
@@ -1029,17 +1053,17 @@ def process_track(
     cliff_hz, cliff_drop = detect_hf_cliff_hz(orig, sr)
     print(f"   {N/sr:.3f}s, {sr} Hz, stereo, BPM={bpm_val:.1f}, profile={active_profile} (varispeed={vs_pct:+.2f}%), HF cliff={cliff_hz:.0f} Hz (drop {cliff_drop:.1f} dB)")
 
-    max_cut = 3.0 if active_profile == "rock" else 2.2
+    max_cut = 3.0 if active_profile == "rock" else 2.4
     comb_firs = build_linear_phase_comb_fir(orig, sr, max_cut_db=max_cut) if not skip_mix_cleanup else None
 
     if stems is not None and not skip_stem_reamp:
         if active_profile == "rock":
-            print("2. Running 4-way exact Wiener split + rock per-stem studio chains (Vocals, Drums, Guitar, Bass)...")
-            working = reamp_stems_rock(orig, sr, stems)
+            print(f"2. Running 4-way exact Wiener split + {os_factor}x rock per-stem studio chains (Vocals, Drums, Guitar, Bass)...")
+            working = reamp_stems_rock(orig, sr, stems, os_factor=os_factor)
         else:
-            print("2. Running 87.5%-overlap exact Wiener split (vocal-guarded) + Lanczos-4 time-domain stem re-amp...")
+            print(f"2. Running 87.5%-overlap exact Wiener split (vocal-guarded) + {os_factor}x Lanczos-6 synth re-amp...")
             xs, xb = split_stems_wiener(orig, sr, stems, target_name)
-            s_reamp = reamp_stem_time_domain(xs, sr, bpm_val)
+            s_reamp = reamp_stem_time_domain(xs, sr, bpm_val, os_factor=os_factor)
             working = xb + s_reamp
             del xs, xb, s_reamp
     else:
@@ -1050,8 +1074,8 @@ def process_track(
         if skip_mix_cleanup:
             return w_seg.copy()
         if active_profile == "rock":
-            return apply_full_mix_cleanup_rock(w_seg, sr, comb_firs, varispeed_pct=vs_pct, seed=seg_seed)
-        return apply_full_mix_cleanup_electronic(w_seg, o_seg, sr, comb_firs, cliff_hz, varispeed_pct=vs_pct, seed=seg_seed)
+            return apply_full_mix_cleanup_rock(w_seg, sr, comb_firs, varispeed_pct=vs_pct, os_factor=os_factor, seed=seg_seed)
+        return apply_full_mix_cleanup_electronic(w_seg, o_seg, sr, comb_firs, varispeed_pct=vs_pct, os_factor=os_factor, seed=seg_seed)
 
     if mode == "audition":
         if not audition_ranges or audition_ranges.strip().lower() == "auto":
@@ -1109,6 +1133,7 @@ def process_track(
         result = {
             "mode": "audition",
             "profile": active_profile,
+            "oversample": os_factor,
             "varispeed_pct": vs_pct,
             "output_wav": out_wav,
             "bpm": bpm_val,
@@ -1116,11 +1141,11 @@ def process_track(
             "elapsed_s": round(time.time() - t0, 1),
             "pairs": report_pairs,
         }
-        print(f"\nWrote audition WAV ({cursor:.2f}s, 24-bit TPDF/{sr}Hz, profile={active_profile}): {out_wav}")
+        print(f"\nWrote audition WAV ({cursor:.2f}s, 24-bit TPDF/{sr}Hz, profile={active_profile}, {os_factor}x OS): {out_wav}")
         print(json.dumps(report_pairs, indent=2))
         return result
 
-    print(f"3. Running {active_profile} full-mix mastering chain across full track...")
+    print(f"3. Running {active_profile} {os_factor}x Hi-Fi full-mix mastering chain across full track...")
     proc = run_mix_chain(working, orig, seed)
     del working
 
@@ -1166,6 +1191,7 @@ def process_track(
     summary = {
         "mode": "full",
         "profile": active_profile,
+        "oversample": os_factor,
         "varispeed_pct": vs_pct,
         "output_wav": out_wav,
         "float32_wav": f32_wav,
@@ -1184,7 +1210,7 @@ def process_track(
         "elapsed_s": round(time.time() - t0, 1),
         "qa": spectral_qa(orig, proc, sr, cliff_hz),
     }
-    print(f"\nWrote full 24-bit TPDF reference master (profile={active_profile}): {out_wav}")
+    print(f"\nWrote full 24-bit TPDF reference master (profile={active_profile}, {os_factor}x OS): {out_wav}")
     print(json.dumps(summary, indent=2))
     return summary
 
@@ -1201,7 +1227,7 @@ def find_matching_stems_dir(wav_path):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="De-AI Audio Master: Standalone Zero-Artifact Audio Cleanup & Linear-Phase Mastering CLI"
+        description="De-AI Audio Master (v2.3): Standalone Zero-Artifact Audio Cleanup & Linear-Phase Mastering CLI"
     )
     ap.add_argument("--input", required=True, help="Path to original stereo WAV or a folder of WAVs (batch mode)")
     ap.add_argument("--stems-dir", default=None, help="Optional folder of WAV stems (auto-matched in batch mode)")
@@ -1211,6 +1237,8 @@ def main():
                     help="Target melodic stem substring for electronic profile ('auto' picks loudest non-core stem)")
     ap.add_argument("--varispeed-pct", type=float, default=None,
                     help="Optional tape varispeed %% (default: 0.0 for electronic, +1.15 for rock; pass 0 for exact duration)")
+    ap.add_argument("--oversample", type=int, choices=[4, 8], default=8,
+                    help="Internal oversampling factor for saturation & HF regeneration (default: 8 = 384 kHz; use 4 for faster batch runs)")
     ap.add_argument("--bpm", type=float, default=None, help="Track BPM (auto-estimated from Drums/mix if omitted)")
     ap.add_argument("--audition-ranges", default="auto", help="'auto' (default) or comma-separated start-end seconds, e.g. 5-19,105-119")
     ap.add_argument("--out-dir", default="./deai_out", help="Output directory (default: ./deai_out)")
@@ -1239,6 +1267,7 @@ def main():
                 target_stem=args.target_stem,
                 profile=args.profile,
                 varispeed_pct=args.varispeed_pct,
+                oversample=args.oversample,
                 bpm=args.bpm,
                 audition_ranges=args.audition_ranges,
                 mode=args.mode,
@@ -1256,6 +1285,7 @@ def main():
             target_stem=args.target_stem,
             profile=args.profile,
             varispeed_pct=args.varispeed_pct,
+            oversample=args.oversample,
             bpm=args.bpm,
             audition_ranges=args.audition_ranges,
             mode=args.mode,
