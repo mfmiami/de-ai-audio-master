@@ -15,14 +15,14 @@ Every audio step happens locally on your machine. Nothing is uploaded anywhere, 
 Because the script embeds PEP 723 dependency metadata, you don't even have to clone the repo or create a virtualenv:
 
 ```bash
-# Audition pass first (--profile auto detects electronic, rock, or hiphop from stems)
+# Audition pass first (--profile auto detects electronic, rock, hiphop, or acoustic from stems or stereo mix)
 uv run https://raw.githubusercontent.com/mfmiami/de-ai-audio-master/main/ai-audio-clean-master/scripts/clean_analog_master.py \
   --input "/path/to/track.wav" \
   --stems-dir "/path/to/stems" \
   --profile auto \
   --mode audition
 
-# Full 24-bit master (omit --stems-dir for a stereo bounce; pass --profile rock or hiphop for stemless non-electronic tracks)
+# Full 24-bit master (omit --stems-dir for a stereo bounce; pass --profile <name> to override auto-routing)
 uv run https://raw.githubusercontent.com/mfmiami/de-ai-audio-master/main/ai-audio-clean-master/scripts/clean_analog_master.py \
   --input "/path/to/track.wav" \
   --stems-dir "/path/to/stems" \
@@ -53,13 +53,22 @@ The local web UI starts on `http://127.0.0.1:8765`, lets you pick a WAV, optiona
 
 ### Profiles (`--profile auto | electronic | rock | hiphop | acoustic`)
 
-Rather than chasing one-off presets per subgenre, the engine groups music into four 8x-oversampled (384 kHz internal) acoustic/stem-dominance archetypes with energy-adaptive per-stem drive scaling so hybrid mixes adapt smoothly (pass `--oversample 4` if you want faster batch CPU runs):
+Rather than chasing one-off presets per subgenre, the engine groups music into four 8x-oversampled (384 kHz internal) acoustic/stem-dominance archetypes with energy-adaptive per-stem drive scaling (`0.80x` to `1.18x`) so hybrid mixes like pop-rock, synth-trap, or electro-soul adapt smoothly (pass `--oversample 4` for faster batch CPU runs):
 
-- **`electronic` (synth-led: EDM, House, Techno, Synthpop, Trance, Ambient)**: Uses a 2-way vocal-guarded Wiener split (re-amping the dominant synth/bleed stem with 8x Class-A warmth, 12-tap Lanczos-6 BBD chorus, and subtle BPM delay), 4097-tap linear-phase comb flattening, 8x-oversampled analog air above `15.2 kHz` (keeping `4 to 15 kHz` sparkling open), elliptical `<95 Hz` sub-mono tightening + M/S stereo bloom (`+0.75 dB` Side `>350 Hz`), a subtle 2049-tap linear-phase mastering contour (`+0.45 dB @ 55 Hz`, `-0.55 dB @ 240 Hz`, `+0.30 dB @ 9.5 kHz`), and `1.2%` console crosstalk. Default varispeed: `0.0%`.
-- **`rock` (guitar/band-led: Rock, Metal, Indie, Punk, Country, Acoustic Band)**: Uses a 4-way exact additive Wiener partition (`Vocals + Drums + Guitar + Bass/Rest`), applying energy-adaptive 8x-oversampled per-stem rock chains (U47/Neve vocal de-ess/warmth + `5%` studio plate, `20%` New York parallel tape drum bus + `6.5%` drum room, minimum-phase 4x12 guitar cab with `7.8 kHz` cone rolloff, `5.2 kHz` bass LP), followed by 15-ips tape rolloff (`10.5 kHz`) + 8x-oversampled envelope-gated analog HF harmonic regeneration, tight `4.2%` shared live-room glue, `1.8:1` 3-band bus glue, `-1.1 dB @ 180 Hz` de-mud cleanup, elliptical `<105 Hz` sub-mono + M/S bloom (`+0.70 dB` Side `>300 Hz`), `2%` console crosstalk, and `+1.15%` analog tape varispeed + human drummer phrase/bar pocket.
-- **`hiphop` (vocal/drum/bass-led: Hip-Hop, Trap, R&B, Vocal Pop, Soul, Afrobeats, Reggaeton)**: Uses a 4-way exact additive Wiener partition (`Vocals + Drums + Bass + Sample/Melodic`), applying energy-adaptive 8x-oversampled per-stem chains (upfront dry vocal preamp + gentle de-ess + tight `3.4%` plate, `22%` sub-95 Hz protected parallel tape drum bus + tight `3.6%` booth, 808-safe `4.5 kHz` LP bass harmonics above `95 Hz`, and Class-A + Lanczos-6 BBD sample/keys warmth), followed by `10.8 kHz` 8x analog HF regeneration (open to `21.5 kHz`), `2.4%` tight studio glue, sub-friendly 3-band bus glue, balanced hip-hop contour (`+1.0 dB @ 58 Hz`, `-1.0 dB @ 190 Hz`, `+1.4 dB @ 6.8 kHz`, `+1.0 dB @ 12.5 kHz`), elliptical `<95 Hz` sub-mono + M/S bloom (`+0.75 dB` Side `>320 Hz`), `1.8%` console crosstalk, and `+1.10%` MPC/tape varispeed + tight groove pocket.
-- **`acoustic` (unplugged/orchestral: Solo Piano, Jazz, Classical, Strings, Acoustic Vocal Ballads)**: Uses a 4-way exact additive Wiener partition (`Vocals + Keys/Strings + Acoustic/Other + Bass/Light Perc`), applying energy-adaptive ribbon/condenser 8x warmth and natural wooden hall ambience (no heavy drum crush or electric guitar cab), followed by `11.8 kHz` 8x analog HF regeneration, ultra-gentle `1.4:1` dynamic preservation, gentle `<80 Hz` sub tightening + M/S bloom, `1.6%` console crosstalk, and pitch-true `0.0%` default varispeed + natural rubato micro-timing.
-- **`auto` (default)**: With `--stems-dir`, inspects fullband and `2 to 16 kHz` stem energy across all four archetypes (`acoustic`, `rock`, `hiphop`, `electronic`). Without stems, falls back to a stereo-only spectral, Mid/Side, and transient-contrast classifier so single-WAV drops auto-route cleanly too. Pass `--varispeed-pct 0` on `rock` or `hiphop` whenever you need exact original pitch and duration for video sync or DAW stem alignment.
+| Profile | Best for | Stem Split | Default Varispeed | Auto-Routing Signal |
+| :--- | :--- | :--- | :---: | :--- |
+| **`electronic`** | EDM, House, Techno, Trance, Synthpop, Ambient | 2-way vocal-guarded (`Synth/Target` + `Backing`) | `0.0%` | Synth carries strong `2-16 kHz` energy / wide stereo pad wall |
+| **`rock`** | Rock, Metal, Indie, Punk, Country, Acoustic Band | 4-way (`Vocals` + `Drums` + `Guitar` + `Bass/Rest`) | `+1.15%` | Guitar dominates mix / live-band mid-high dynamics |
+| **`hiphop`** | Hip-Hop, Trap, R&B, Vocal Pop, Soul, Afrobeats, Reggaeton | 4-way (`Vocals` + `Drums` + `Bass` + `Sample/Melodic`) | `+1.10%` | Vocals + Drums dominate `2-16 kHz` over Synth / punchy sub pulses |
+| **`acoustic`** | Solo Piano, Jazz, Classical, Strings, Acoustic Vocal Ballads | 4-way (`Vocals` + `Keys/Strings` + `Acoustic` + `Bass/Perc`) | `0.0%` | Drums + Synth quiet or minimal `<120 Hz` sub energy |
+
+Detailed per-profile DSP chains:
+
+- **`electronic`**: Re-amps the dominant synth/bleed stem with 8x Class-A warmth, 12-tap Lanczos-6 BBD chorus, and subtle BPM delay; then applies 4097-tap linear-phase comb flattening, 8x-oversampled analog air above `15.2 kHz` (keeping `4 to 15 kHz` sparkling open), elliptical `<95 Hz` sub-mono tightening + M/S stereo bloom (`+0.75 dB` Side `>350 Hz`), a 2049-tap linear-phase mastering contour (`+0.45 dB @ 55 Hz`, `-0.55 dB @ 240 Hz`, `+0.30 dB @ 9.5 kHz`), and `1.2%` console crosstalk.
+- **`rock`**: Energy-adaptive 8x per-stem chains (U47/Neve vocal de-ess/warmth + `5%` studio plate, `20%` New York parallel tape drum bus + `6.5%` drum room, minimum-phase 4x12 guitar cab with `7.8 kHz` cone rolloff, `5.2 kHz` bass LP), followed by 15-ips tape rolloff (`10.5 kHz`) + 8x analog HF harmonic regeneration, `4.2%` shared live-room glue, `1.8:1` 3-band bus glue, `-1.1 dB @ 180 Hz` de-mud cleanup, elliptical `<105 Hz` sub-mono + M/S bloom (`+0.70 dB` Side `>300 Hz`), `2%` console crosstalk, and `+1.15%` tape varispeed + human drummer pocket.
+- **`hiphop`**: Energy-adaptive 8x per-stem chains (upfront dry vocal preamp + gentle de-ess + tight `3.4%` plate, `22%` sub-95 Hz protected parallel tape drum bus + tight `3.6%` booth, 808-safe `4.5 kHz` LP bass harmonics above `95 Hz`, and Class-A + Lanczos-6 BBD sample/keys warmth), followed by `10.8 kHz` 8x analog HF regeneration (open to `21.5 kHz`), `2.4%` tight studio glue, sub-friendly 3-band bus glue, balanced hip-hop contour (`+1.0 dB @ 58 Hz`, `-1.0 dB @ 190 Hz`, `+1.4 dB @ 6.8 kHz`, `+1.0 dB @ 12.5 kHz`), elliptical `<95 Hz` sub-mono + M/S bloom (`+0.75 dB` Side `>320 Hz`), `1.8%` console crosstalk, and `+1.10%` MPC/tape varispeed + tight groove pocket.
+- **`acoustic`**: Energy-adaptive 8x ribbon/condenser chains (gentle vocal de-ess + wooden studio room, warm piano/strings hall depth, woody acoustic guitar shaping with zero 4x12 cab or drum crush, clean upright bass warmth), followed by `11.8 kHz` 8x analog HF regeneration, ultra-gentle `1.4:1` dynamic preservation (`<= 0.9 dB` GR), gentle `<80 Hz` sub tightening + M/S bloom, `1.6%` console crosstalk, and pitch-true `0.0%` default varispeed + natural rubato micro-timing.
+- **`auto` (default)**: With `--stems-dir`, inspects fullband and `2 to 16 kHz` stem energy across all four archetypes. Without stems, runs a stereo-only spectral, Mid/Side, and transient-contrast classifier so single-WAV drops auto-route cleanly too. Pass `--varispeed-pct 0` on `rock` or `hiphop` whenever you need exact original pitch and duration for video sync or DAW stem alignment.
 
 ### Built-in regression test suite
 
@@ -67,6 +76,9 @@ Run the self-contained 4-archetype regression suite (synthesizes multi-stem fixt
 
 ```bash
 python3 tests/test_regression.py
+
+# Optionally also verify stem and stereo-only auto-routing against your own local reference tracks:
+python3 tests/test_regression.py --real-root "/path/to/reference_tracks"
 ```
 
 ### Built-in portability details
@@ -94,8 +106,8 @@ Earlier attempts using FluidSynth stem swaps, STFT sinusoidal peak tracking (`SM
 
 To avoid those issues, the script splits the work into two parts:
 
-1. **Optional stem re-amp (if you have stems).** In `electronic` mode, it finds correlated bleed stems (`r > 0.35`), shields vocals with a `1.4x` weight, and runs an 87.5%-overlap additive 2-way Wiener split (`original == target_stem + backing` to `~1e-16` error, sub-90 Hz protected) with 8x Class-A warmth and Lanczos-6 BBD chorus. In `rock` and `hiphop` modes, it runs an exact 4-way additive Wiener partition (`Vocals + Drums + Guitar/Bass + Rest/Sample`, sub-85 Hz protected in Drums + Bass) so every dominant stem gets dedicated 8x-oversampled studio processing.
-2. **Full-mix pass without STFT framing.** The full mix goes through a 4097-tap Blackman-windowed linear-phase FIR to cut stationary comb peaks, 8x-oversampled envelope-gated harmonic air regeneration (gated to zero in quiet gaps), a flat-magnitude 2nd-order allpass cascade, slow tonal drift, stereo-linked Lanczos-8 micro-timing variation (identical L/R read pointers so there is no flanging), elliptical sub-bass mono tightening + M/S width bloom, light 8x M/S Class-A bus saturation above 115 to 120 Hz, and console crosstalk.
+1. **Optional stem re-amp (if you have stems).** In `electronic` mode, it finds correlated bleed stems (`r > 0.35`), shields vocals with a `1.4x` weight, and runs an 87.5%-overlap additive 2-way Wiener split (`original == target_stem + backing` to `~1e-16` error, sub-90 Hz protected) with 8x Class-A warmth and Lanczos-6 BBD chorus. In `rock`, `hiphop`, and `acoustic` modes, it runs an exact 4-way additive Wiener partition with energy-adaptive per-stem drive scaling (`0.80x` to `1.18x`) so every dominant stem gets dedicated 8x-oversampled studio processing while keeping sub-bass clean.
+2. **Full-mix pass without STFT framing.** The full mix goes through a 4097-tap Blackman-windowed linear-phase FIR to cut stationary comb peaks, 8x-oversampled envelope-gated harmonic air regeneration (gated to zero in quiet gaps), a flat-magnitude 2nd-order allpass cascade, slow tonal drift, stereo-linked Lanczos-8 micro-timing variation (identical L/R read pointers so there is no flanging), elliptical sub-bass mono tightening + M/S width bloom, light 8x M/S Class-A bus saturation above 100 to 120 Hz, and console crosstalk.
 
 Output is matched to the original integrated LUFS (with an 8x-oversampled soft-knee true-peak safety ceiling when rare phase spikes exceed `-1.2 dBFS`) and written as 24-bit PCM with 1-LSB TPDF dither (plus an optional 32-bit float file). If something sounds off on a specific track, use `--skip-stem-reamp` or `--skip-mix-cleanup` to isolate which pass caused it.
 
