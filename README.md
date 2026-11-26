@@ -1,5 +1,7 @@
 # De-AI Audio Master
 
+> **Work in progress:** This tool is actively being developed and has mainly been tested on electronic and synth-driven vocal tracks so far. More testing and tuning will be needed across a wider variety of genres (acoustic, rock, hip-hop, jazz, orchestral, etc.), so always run the audition pass first and trust your ears.
+
 A standalone, 100% local Python DSP tool for cleaning up common technical artifacts in AI-generated tracks (from tools like Suno or Udio) without wrecking the mix.
 
 It runs completely offline on CPU with only `numpy`, `scipy`, and `soundfile` (`ffmpeg` is optional). You can use it as a standalone CLI, a zero-install `uv` one-liner, a local drag-and-drop browser UI, or optionally pair it with an AI coding agent using the included skill for Antigravity, Claude Code / Claude Desktop, and OpenAI Codex.
