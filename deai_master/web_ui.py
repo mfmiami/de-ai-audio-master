@@ -100,11 +100,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
     <div class="grid" style="margin-top:14px;">
       <div>
-        <label>Target Melodic Stem Keyword</label>
-        <input id="targetStem" type="text" value="Synth" placeholder="Synth, Guitar, Piano...">
+        <label>Profile</label>
+        <select id="profile">
+          <option value="auto" selected>Auto (detect from stems)</option>
+          <option value="electronic">Electronic / Synth</option>
+          <option value="rock">Rock / Band (Vocals + Drums + Guitar)</option>
+        </select>
       </div>
       <div>
-        <label>BPM (blank = auto from Drums/mix)</label>
+        <label>Target Stem (electronic mode)</label>
+        <input id="targetStem" type="text" value="auto" placeholder="auto, Synth, Keyboard...">
+      </div>
+      <div>
+        <label>Varispeed % (blank = profile default)</label>
+        <input id="varispeed" type="number" step="0.05" placeholder="0 (elec) / +1.15 (rock)">
+      </div>
+      <div>
+        <label>BPM (blank = auto)</label>
         <input id="bpm" type="number" step="0.1" placeholder="auto">
       </div>
       <div>
@@ -209,7 +221,9 @@ async function runMode(mode) {
     const payload = {
       job_id: jobId,
       mode,
-      target_stem: document.getElementById("targetStem").value.trim() || "Synth",
+      profile: document.getElementById("profile").value || "auto",
+      target_stem: document.getElementById("targetStem").value.trim() || "auto",
+      varispeed_pct: document.getElementById("varispeed").value !== "" ? parseFloat(document.getElementById("varispeed").value) : null,
       bpm: document.getElementById("bpm").value ? parseFloat(document.getElementById("bpm").value) : null,
       audition_ranges: document.getElementById("ranges").value.trim() || "auto",
       also_float32: document.getElementById("float32").checked,
@@ -224,7 +238,7 @@ async function runMode(mode) {
     const d = await r.json();
     if (!r.ok || d.error) throw new Error(d.error || "Processing failed");
     renderResult(d);
-    setStatus("Finished " + mode + " pass in " + d.result.elapsed_s + "s (BPM " + d.result.bpm + ", " + d.result.lufs_backend + ").", "ok");
+    setStatus("Finished " + mode + " pass in " + d.result.elapsed_s + "s (profile=" + d.result.profile + ", varispeed=" + d.result.varispeed_pct + "%, BPM=" + d.result.bpm + ", " + d.result.lufs_backend + ").", "ok");
   } catch (e) {
     setStatus(e.message, "err");
   } finally {
@@ -425,7 +439,9 @@ class Handler(BaseHTTPRequestHandler):
                         input_path=job["mix"],
                         out_dir=job["out_dir"],
                         stems_dir=job["stems_dir"] if job["has_stems"] else None,
-                        target_stem=body.get("target_stem") or "Synth",
+                        target_stem=body.get("target_stem") or "auto",
+                        profile=body.get("profile") or "auto",
+                        varispeed_pct=body.get("varispeed_pct"),
                         bpm=body.get("bpm"),
                         audition_ranges=body.get("audition_ranges") or "auto",
                         mode=body.get("mode", "audition"),

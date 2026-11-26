@@ -1,6 +1,6 @@
 # De-AI Audio Master
 
-> **Work in progress:** This tool is actively being developed and has mainly been tested on electronic and synth-driven vocal tracks so far. More testing and tuning will be needed across a wider variety of genres (acoustic, rock, hip-hop, jazz, orchestral, etc.), so always run the audition pass first and trust your ears.
+> **Work in progress:** This tool is actively being developed and has so far been tested on electronic/synth tracks and guitar-driven rock tracks. More testing and tuning will be needed across other genres (solo acoustic, hip-hop, jazz, orchestral, etc.), so always run the audition pass first and trust your ears.
 
 A standalone, 100% local Python DSP tool for cleaning up common technical artifacts in AI-generated tracks (from tools like Suno or Udio) without wrecking the mix.
 
@@ -15,16 +15,18 @@ Every audio step happens locally on your machine. Nothing is uploaded anywhere, 
 Because the script embeds PEP 723 dependency metadata, you don't even have to clone the repo or create a virtualenv:
 
 ```bash
-# Audition pass first (auto-picks exposed intro, hook, and climax chorus ranges)
+# Audition pass first (--profile auto detects electronic vs rock from stems)
 uv run https://raw.githubusercontent.com/mfmiami/de-ai-audio-master/main/ai-audio-clean-master/scripts/clean_analog_master.py \
   --input "/path/to/track.wav" \
   --stems-dir "/path/to/stems" \
+  --profile auto \
   --mode audition
 
-# Full 24-bit master (omit --stems-dir if you only have a stereo bounce)
+# Full 24-bit master (omit --stems-dir if you only have a stereo bounce; pass --profile rock for stemless rock tracks)
 uv run https://raw.githubusercontent.com/mfmiami/de-ai-audio-master/main/ai-audio-clean-master/scripts/clean_analog_master.py \
   --input "/path/to/track.wav" \
   --stems-dir "/path/to/stems" \
+  --profile auto \
   --mode full
 ```
 
@@ -40,14 +42,22 @@ That gives you two commands:
 
 ```bash
 # 1. Standalone CLI (single track OR a whole folder of WAVs in batch mode)
-deai-master --input "/path/to/track.wav" --stems-dir "/path/to/stems" --mode audition
-deai-master --input "/path/to/album_folder" --mode full --also-float32
+deai-master --input "/path/to/track.wav" --stems-dir "/path/to/stems" --profile auto --mode audition
+deai-master --input "/path/to/album_folder" --profile auto --mode full --also-float32
 
 # 2. Local browser UI (100% offline, zero extra dependencies)
 deai-master-ui --open
 ```
 
-The local web UI starts on `http://127.0.0.1:8765`, lets you pick a WAV and optional stems, plays the loudness-matched A/B audition right in the browser with jump buttons for each pair, prints the QA table, and exports the final 24-bit WAV.
+The local web UI starts on `http://127.0.0.1:8765`, lets you pick a WAV, optional stems, and profile (`Auto`, `Electronic / Synth`, or `Rock / Band`), plays the loudness-matched A/B audition right in the browser with jump buttons for each pair, prints the QA table, and exports the final 24-bit WAV.
+
+### Profiles (`--profile auto | electronic | rock`)
+
+Different genres carry AI artifacts in different places, so the engine ships with two tuned profiles:
+
+- **`electronic`**: Built for synth- and pad-driven tracks. Uses a 2-way vocal-guarded Wiener split (re-amping the dominant synth/bleed stem with Class-A warmth, Lanczos-4 BBD chorus, and subtle BPM delay) plus a zero-STFT-framing linear-phase mastering pass that keeps `30 Hz` to `16 kHz` tightly matched to the original mix. Default varispeed: `0.0%`.
+- **`rock`**: Built for guitar-, live-drum-, and vocal-driven tracks where vocals and drums carry most of the mix energy. Uses a 4-way exact additive Wiener partition (`Vocals + Drums + Guitar + Bass/Rest`), applying per-stem rock chains (U47/Neve vocal de-ess/warmth + `5%` studio plate, `20%` New York parallel tape drum bus + `6.5%` drum room, minimum-phase 4x12 guitar cab with `7.8 kHz` cone rolloff, `5.2 kHz` bass LP), followed by 15-ips tape rolloff (`12.2 kHz`) + envelope-gated 4x-oversampled analog HF harmonic regeneration, tight `4.2%` shared live-room glue, gentle 3-band bus glue, `2%` console crosstalk, and `+1.15%` analog tape varispeed + human drummer phrase/bar pocket. Pass `--varispeed-pct 0` if you need exact original pitch and duration for video sync or DAW stem alignment.
+- **`auto` (default)**: Inspects stem RMS levels when `--stems-dir` is given and picks `rock` when Guitar/Drums/Vocals outweigh Synth, or `electronic` otherwise. Without stems, `auto` defaults to `electronic` (pass `--profile rock` explicitly for stereo-only rock tracks).
 
 ### Built-in portability details
 

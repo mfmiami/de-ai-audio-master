@@ -35,8 +35,10 @@ rigid machine timing, and leftover generator metadata).
 ### Step 1: Gather Inputs & Verify Environment
 Collect from the user (or infer from the workspace):
 - Original stereo mix WAV (`--input`, or a folder of WAVs for batch mode)
-- Optional stems directory (`--stems-dir`) and target stem keyword (`--target-stem`, e.g., `Synth`)
-- Optional audition ranges (`--audition-ranges auto` by default, which automatically picks an exposed opening, strongest target-stem hook, and densest chorus; or pass explicit ranges like `32-46,110-122`)
+- Optional stems directory (`--stems-dir`)
+- Genre profile (`--profile auto` by default, which picks `rock` when Guitar/Drums/Vocals dominate over Synth and `electronic` otherwise; or pass `--profile electronic` / `--profile rock` explicitly)
+- Optional `--varispeed-pct` (defaults to `0.0` for `electronic` and `+1.15` for `rock`; pass `--varispeed-pct 0` if exact original pitch/duration is needed for video sync or DAW stem alignment)
+- Optional audition ranges (`--audition-ranges auto` by default, which picks an exposed opening, strongest hook, and densest chorus; or pass explicit ranges like `32-46,110-122`)
 - Whether to pause for A/B audition approval first (`--mode audition`, default) or render the full master directly (`--mode full`)
 
 Verify Python (`numpy`, `scipy`, `soundfile`) is available (or use `uv run`). `ffmpeg` is optional: when installed, the script uses `ffmpeg ebur128` for ITU-R BS.1770-4 loudness/true-peak checks; otherwise it falls back automatically to its built-in pure-Python K-weighted BS.1770-4 engine.
@@ -48,25 +50,24 @@ Run the bundled self-contained DSP script [scripts/clean_analog_master.py](./scr
 python3 ./scripts/clean_analog_master.py \
   --input "/path/to/original.wav" \
   --stems-dir "/path/to/stems" \
-  --target-stem "Synth" \
+  --profile auto \
   --audition-ranges "auto" \
   --out-dir "/path/to/output" \
   --mode audition
 ```
 
-Omit `--stems-dir` if no stems exist (the script runs the contiguous full-mix chain directly).
+Omit `--stems-dir` if no stems exist (the script runs the contiguous full-mix chain directly; pass `--profile rock` explicitly for stemless rock/band tracks).
 
 What the script enforces automatically:
-- **Exact reference-preserving stem split**: detects correlated duplicate stems (e.g., Synth bleeding into Keyboard with `r > 0.35`) so nothing is double-counted, applies an explicit `1.4×` vocal-protection guard to any vocal stems, and performs an 87.5%-overlap exact additive complex Wiener split (`original == backing + target_stem`, max reconstruction error `~1e-15`) with sub-90 Hz protected in `backing`.
-- **Time-domain stem re-amp** (target stem only): sub-protected (`>120 Hz`) Mid/Side 4×-oversampled Class-A asymmetric triode/tape saturation -> pure time-domain 8-tap **Lanczos-4** quadrature Juno-style BBD stereo chorus above `900 Hz` (zero treble loss) -> subtle BPM-synced warm LP analog delay tail (`4.2%` wet, `2.8 kHz` LP) -> exact RMS restore.
-- **Zero-STFT-framing contiguous full-mix mastering chain**:
-  - Track-wide conservative stationary comb flattening (`2.2–18.2 kHz`, cuts `<= 2.2 dB` only where both mean and 25th-percentile floor show excess) realized via an exact symmetric **4097-tap Blackman-windowed Linear-Phase FIR** convolution (`0.000°` phase, zero STFT framing) with smooth broadband energy preservation.
-  - Envelope-following pure time-domain 4×-oversampled harmonic air exciter above the detected bandwidth cliff (silky natural air, gated cleanly to zero during quiet gaps).
-  - Pure time-domain 2nd-order analog allpass cascade above `5.8 kHz` (`0.000 dB` flat magnitude, slight L/R offset).
-  - Subtle time-domain slow biquad mastering tonal breath (`±0.40 dB` across 4 bands).
-  - Stereo-linked **Lanczos-8** (16-tap) organic micro-tempo breath (`±0.11%` max rate, `1.2 s` smoothing, identical L/R read positions).
-  - Sub-protected (`>120 Hz`) Mid/Side 4×-oversampled Class-A mastering bus sheen (`11%` wet) + ultra-smooth **2049-tap Linear-Phase FIR** reference-sparkle balance trim (`±0.85 dB` max, keeping `30 Hz – 16 kHz` flat within `±0.08 dB` of original) + `-82 dBFS` 1/f natural analog floor.
-- **Strict LUFS-matched 24-bit TPDF export**: writes clean 44-byte 24-bit PCM WAVs with true 1-LSB triangular-PDF (TPDF) dither (plus optional `--also-float32` archival float export in `full` mode). In `audition` mode, exports `[Original 1] -> 1s silence -> [Processed 1] -> 2s silence -> [Original 2] -> 1s silence -> [Processed 2]`, loudness-matched per pair via `ffmpeg ebur128`.
+- **Profile `electronic`**:
+  - 87.5%-overlap exact additive 2-way Wiener stem split (`original == backing + target_stem`, error `~1e-15`) with correlated-bleed projection (`r > 0.35`), `1.4x` vocal guard, and sub-90 Hz protected in backing.
+  - Target-stem re-amp: sub-protected (`>120 Hz`) M/S 4x-oversampled Class-A saturation -> 8-tap Lanczos-4 BBD stereo chorus above `900 Hz` -> `4.2%` warm BPM delay -> exact RMS restore.
+  - Zero-STFT-framing full-mix chain: 4097-tap linear-phase FIR comb flattening (`<= 2.2 dB` cuts only), envelope-gated 4x harmonic air exciter above the detected HF cliff, analog allpass cascade (`>5.8 kHz`), slow tonal breath (`±0.40 dB`), stereo-linked Lanczos-8 micro-tempo breath, M/S Class-A bus sheen, and 2049-tap linear-phase reference balance trim.
+- **Profile `rock`** (for guitar, live-drum, and vocal-driven tracks):
+  - 87.5%-overlap exact additive 4-way Wiener partition (`Vocals + Drums + Guitar + Bass/Rest == original`, error `~1e-12`, sub-85 Hz kept in Drums + Bass).
+  - Per-stem studio rock chains: Vocals (dynamic de-ess `6.5-11.5 kHz`, U47/Neve tone shaping, 4x tube preamp, `5%` diffused stereo studio plate, vocal allpass), Drums (`20%` New York parallel tape drum bus, `6.5%` stereo drum room, cymbal allpass), Guitar (minimum-phase 4x12 cab curve with `7.8 kHz` speaker cone rolloff, Class-A tube warmth, subtle Lanczos-4 width), Bass (`5.2 kHz` LP stripping ultrasonic shelf and 50 Hz codec spikes + mid-growl).
+  - Full-mix rock chain: 4097-tap linear-phase comb FIR (`<= 3.0 dB` cuts only), 15-ips tape rolloff (`12.2 kHz`) + envelope-gated 4x analog HF harmonic regeneration, 5-stage allpass dispersion, `4.2%` tight shared live-room glue, gentle 3-band analog bus glue, `+1.15%` tape varispeed (configurable via `--varispeed-pct`) + human drummer phrase/bar pocket via Lanczos-8, M/S Class-A sheen, and `2%` analog console crosstalk.
+- **Strict LUFS-matched 24-bit TPDF export**: writes clean 44-byte 24-bit PCM WAVs with true 1-LSB triangular-PDF (TPDF) dither (plus optional `--also-float32` archival export in `full` mode). In `audition` mode, exports `[Original 1] -> 1s silence -> [Processed 1] -> 2s silence -> [Original 2] -> 1s silence -> [Processed 2]`, loudness-matched per pair.
 
 ### Step 3: Mandatory Ear Check & Ablation Gate
 Directly audition the exported clips (especially any quiet/exposed intro, hook, and vocal chorus). If you hear any dullness, phase shift, or artifacts:
