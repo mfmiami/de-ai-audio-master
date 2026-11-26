@@ -34,12 +34,12 @@ rigid machine timing, and leftover generator metadata).
 
 ### Step 1: Gather Inputs & Verify Environment
 Collect from the user (or infer from the workspace):
-- Original stereo mix WAV (`--input`)
+- Original stereo mix WAV (`--input`, or a folder of WAVs for batch mode)
 - Optional stems directory (`--stems-dir`) and target stem keyword (`--target-stem`, e.g., `Synth`)
-- One exposed melodic/hook range and one dense vocal/drum chorus range (`--audition-ranges`, e.g., `32-46,110-122`)
+- Optional audition ranges (`--audition-ranges auto` by default, which automatically picks an exposed opening, strongest target-stem hook, and densest chorus; or pass explicit ranges like `32-46,110-122`)
 - Whether to pause for A/B audition approval first (`--mode audition`, default) or render the full master directly (`--mode full`)
 
-Verify Python (`numpy`, `scipy`, `soundfile`) and `ffmpeg` (for ITU-R BS.1770-4 `ebur128` loudness/true-peak checks) are available.
+Verify Python (`numpy`, `scipy`, `soundfile`) is available (or use `uv run`). `ffmpeg` is optional: when installed, the script uses `ffmpeg ebur128` for ITU-R BS.1770-4 loudness/true-peak checks; otherwise it falls back automatically to its built-in pure-Python K-weighted BS.1770-4 engine.
 
 ### Step 2: Run the Audition Pass First (Default)
 Run the bundled self-contained DSP script [scripts/clean_analog_master.py](./scripts/clean_analog_master.py):
@@ -49,7 +49,7 @@ python3 ./scripts/clean_analog_master.py \
   --input "/path/to/original.wav" \
   --stems-dir "/path/to/stems" \
   --target-stem "Synth" \
-  --audition-ranges "32-46,110-122" \
+  --audition-ranges "auto" \
   --out-dir "/path/to/output" \
   --mode audition
 ```

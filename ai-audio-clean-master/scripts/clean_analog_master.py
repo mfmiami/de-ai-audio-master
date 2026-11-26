@@ -1,27 +1,38 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "numpy>=1.26.0",
+#   "scipy>=1.11.0",
+#   "soundfile>=0.12.1",
+# ]
+# ///
 """
-Reference-Audiophile Zero-Artifact Time-Domain Audio Cleanup & Analog Mastering CLI (v2).
+De-AI Audio Master: Standalone Zero-Artifact Time-Domain Cleanup & Linear-Phase Mastering CLI.
 
-Upgrades for maximum studio fidelity:
-1. High-overlap (87.5%) exact additive complex Wiener stem split with explicit Lead Vocal
-   protection (1.4x) and correlated-bleed projection (sums back to original to ~1e-15).
-2. Pure time-domain isolated target-stem analog re-amp:
-   - 4x oversampled Class-A asymmetric triode/tape warmth (>120 Hz sub-protected)
-   - 8-tap Lanczos-4 quadrature Juno-style BBD stereo chorus (>900 Hz, zero HF loss)
-   - Subtle BPM-synced warm LP analog delay tail (4.5% wet)
+Runs 100% locally on CPU with only numpy, scipy, and soundfile (ffmpeg is optional).
+Can be run directly via `uv run`, installed as `deai-master`, used via `deai-master-ui`,
+or invoked by an AI agent skill (Antigravity, Claude Code, Codex).
+
+Pipeline:
+1. Optional 87.5%-overlap exact additive complex Wiener stem split (orig == xs + xb to ~1e-15)
+   with correlated-bleed projection (r > 0.35), 1.4x vocal protection, and sub-90 Hz backing guard.
+2. Pure time-domain isolated target-stem re-amp:
+   - Sub-protected (>120 Hz) Mid/Side 4x-oversampled Class-A asymmetric saturation
+   - 8-tap Lanczos-4 quadrature Juno-style BBD stereo chorus (>900 Hz, zero treble loss)
+   - Subtle BPM-synced warm LP analog delay tail (4.2% wet)
 3. Zero-STFT-framing contiguous full-mix mastering chain:
-   - Exact continuous Linear-Phase Blackman-windowed FIR convolution combining conservative
-     track-wide stationary comb flattening (<=2.2 dB cuts only, zero boosts) + ultra-smooth
-     broadband reference-sparkle balance trim (flat within +-0.08 dB from 30 Hz to 18.5 kHz!)
-   - Envelope-following 4x-oversampled time-domain harmonic air exciter above the HF cliff
-     (silky natural air >18 kHz, completely silent in quiet gaps)
-   - Pure time-domain 2nd-order analog allpass cascade (>5.8 kHz, exact 0.000 dB magnitude)
-   - Pure time-domain slow biquad mastering tonal breath (+-0.40 dB across 4 bands)
-   - Stereo-linked Lanczos-8 (16-tap, flat to >21 kHz) organic micro-tempo breath
-   - Sub-protected (>120 Hz) Mid/Side-aware 4x-oversampled Class-A mastering bus sheen
-   - Subtle -82 dBFS 1/f natural analog converter floor + true 24-bit TPDF dither
-4. Strict ITU-R BS.1770-4 LUFS matching, clean 44-byte 24-bit WAV export (zero source metadata),
-   transient/punch verification, and spot-check clips for direct ear QA.
+   - 4097-tap Blackman-windowed Linear-Phase FIR stationary comb flattening (<=2.2 dB cuts only)
+   - Envelope-following 4x-oversampled harmonic air exciter above the detected HF cutoff
+   - Pure time-domain 2nd-order analog allpass cascade (>5.8 kHz, flat 0.000 dB magnitude)
+   - Slow time-domain biquad tonal breath (+-0.40 dB across 4 bands)
+   - Stereo-linked Lanczos-8 (16-tap) organic micro-tempo breath (identical L/R read pointers)
+   - Sub-protected (>120 Hz) Mid/Side 4x-oversampled Class-A bus warmth
+   - 2049-tap Linear-Phase FIR reference-sparkle balance trim (+-0.85 dB max)
+   - -82 dBFS 1/f analog floor + true 24-bit 1-LSB TPDF dither
+4. ITU-R BS.1770-4 LUFS matching (uses ffmpeg ebur128 if available, or built-in pure-Python
+   K-weighted ITU-R BS.1770-4 loudness + 4x oversampled true peak fallback), clean 44-byte
+   WAV header export, transient crest verification, and 4 automatic spot-check clips.
 """
 
 import argparse
@@ -30,6 +41,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import time
 import numpy as np
@@ -37,17 +49,108 @@ import soundfile as sf
 from scipy import signal
 
 
-def measure_lufs_lra_tp(path):
-    cmd = ["ffmpeg", "-nostats", "-i", path, "-filter_complex", "ebur128=peak=true", "-f", "null", "-"]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    out = proc.stderr
-    m_i = re.findall(r"I:\s+(-?\d+\.\d+)\s+LUFS", out)
-    m_lra = re.findall(r"LRA:\s+(-?\d+\.\d+)\s+LU", out)
-    m_p = re.findall(r"Peak:\s+(-?\d+\.\d+)\s+dBFS", out)
-    if not m_i or not m_p:
-        raise RuntimeError(f"ffmpeg ebur128 failed on {path}:\n{out[-500:]}")
-    lra = float(m_lra[-1]) if m_lra else 0.0
-    return float(m_i[-1]), lra, float(m_p[-1])
+_HAS_FFMPEG = shutil.which("ffmpeg") is not None
+
+
+def _bs1770_k_weight(x_stereo, sr):
+    """ITU-R BS.1770-4 Stage 1 (pre-filter shelf) + Stage 2 (RLB high-pass) at arbitrary sample rate."""
+    # Exact 48 kHz coefficients from ITU-R BS.1770-4; bilinear warp for other sample rates
+    if sr == 48000:
+        b1 = np.array([1.53512485958697, -2.69169618940638, 1.19839281085285])
+        a1 = np.array([1.0, -1.69065929318241, 0.73248077421585])
+        b2 = np.array([1.0, -2.0, 1.0])
+        a2 = np.array([1.0, -1.99004745483398, 0.99007225036621])
+    else:
+        # Derive analog prototypes matching BS.1770-4 shelf (+4 dB @ 1681.97 Hz, Q=0.707175) & HP (38.135 Hz, Q=0.500327)
+        f0, G, Q = 1681.974450955533, 3.999843853973347, 0.7071752369554196
+        K = math.tan(math.pi * f0 / sr)
+        Vh = 10.0 ** (G / 20.0)
+        Vb = Vh ** 0.4996667741545416
+        a0 = 1.0 + K / Q + K * K
+        b1 = np.array([(Vh + Vb * K / Q + K * K) / a0, 2.0 * (K * K - Vh) / a0, (Vh - Vb * K / Q + K * K) / a0])
+        a1 = np.array([1.0, 2.0 * (K * K - 1.0) / a0, (1.0 - K / Q + K * K) / a0])
+        f_hp, Q_hp = 38.13547087602444, 0.5003270373238773
+        K2 = math.tan(math.pi * f_hp / sr)
+        a0_2 = 1.0 + K2 / Q_hp + K2 * K2
+        b2 = np.array([1.0, -2.0, 1.0]) / a0_2
+        a2 = np.array([1.0, 2.0 * (K2 * K2 - 1.0) / a0_2, (1.0 - K2 / Q_hp + K2 * K2) / a0_2])
+    y = signal.lfilter(b1, a1, x_stereo, axis=0)
+    y = signal.lfilter(b2, a2, y, axis=0)
+    return y
+
+
+def measure_lufs_lra_tp_python(x_stereo, sr):
+    """Pure-Python ITU-R BS.1770-4 integrated LUFS, EBU R128 LRA, and 4x oversampled True Peak."""
+    y = _bs1770_k_weight(x_stereo, sr)
+    blk_len = int(round(0.4 * sr))
+    hop = int(round(0.1 * sr))
+    n = len(y)
+    if n < blk_len:
+        ms = float(np.mean(y[:, 0] ** 2) + np.mean(y[:, 1] ** 2))
+        lufs = -0.691 + 10.0 * math.log10(max(ms, 1e-15))
+        lra = 0.0
+    else:
+        n_blocks = 1 + (n - blk_len) // hop
+        cs0 = np.concatenate([[0.0], np.cumsum(y[:, 0] ** 2)])
+        cs1 = np.concatenate([[0.0], np.cumsum(y[:, 1] ** 2)])
+        idx = np.arange(n_blocks) * hop
+        z = ((cs0[idx + blk_len] - cs0[idx]) + (cs1[idx + blk_len] - cs1[idx])) / blk_len
+        l_blk = -0.691 + 10.0 * np.log10(np.maximum(z, 1e-15))
+        above_abs = l_blk > -70.0
+        if not np.any(above_abs):
+            lufs = -70.0
+        else:
+            g_rel = -0.691 + 10.0 * math.log10(max(float(np.mean(z[above_abs])), 1e-15)) - 10.0
+            above_rel = l_blk > g_rel
+            lufs = -0.691 + 10.0 * math.log10(max(float(np.mean(z[above_rel])), 1e-15)) if np.any(above_rel) else -70.0
+
+        # Short-term 3.0s blocks (hop 0.1s) for LRA (EBU Tech 3342)
+        st_len = int(round(3.0 * sr))
+        if n >= st_len:
+            n_st = 1 + (n - st_len) // hop
+            s_idx = np.arange(n_st) * hop
+            z_st = ((cs0[s_idx + st_len] - cs0[s_idx]) + (cs1[s_idx + st_len] - cs1[s_idx])) / st_len
+            l_st = -0.691 + 10.0 * np.log10(np.maximum(z_st, 1e-15))
+            m_abs = l_st > -70.0
+            if np.any(m_abs):
+                g_st = -0.691 + 10.0 * math.log10(max(float(np.mean(z_st[m_abs])), 1e-15)) - 20.0
+                valid = l_st[l_st > g_st]
+                lra = float(np.percentile(valid, 95) - np.percentile(valid, 10)) if len(valid) >= 2 else 0.0
+            else:
+                lra = 0.0
+        else:
+            lra = 0.0
+
+    # 4x oversampled True Peak (dBTP) in chunks to stay memory-light
+    tp_lin = 1e-9
+    chunk = 524288
+    for s0 in range(0, n, chunk):
+        seg = x_stereo[s0:min(n, s0 + chunk)]
+        for ch in range(2):
+            up = signal.resample_poly(seg[:, ch], 4, 1)
+            pk = float(np.max(np.abs(up)))
+            if pk > tp_lin:
+                tp_lin = pk
+    tp_db = 20.0 * math.log10(max(tp_lin, 1e-9))
+    return round(lufs, 1), round(lra, 1), round(tp_db, 1)
+
+
+def measure_lufs_lra_tp(path, force_python=False):
+    """Measure LUFS, LRA, and True Peak via ffmpeg ebur128 if available, else pure-Python BS.1770-4."""
+    if _HAS_FFMPEG and not force_python:
+        cmd = ["ffmpeg", "-nostats", "-i", path, "-filter_complex", "ebur128=peak=true", "-f", "null", "-"]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        out = proc.stderr
+        m_i = re.findall(r"I:\s+(-?\d+\.\d+)\s+LUFS", out)
+        m_lra = re.findall(r"LRA:\s+(-?\d+\.\d+)\s+LU", out)
+        m_p = re.findall(r"Peak:\s+(-?\d+\.\d+)\s+dBFS", out)
+        if m_i and m_p:
+            lra = float(m_lra[-1]) if m_lra else 0.0
+            return float(m_i[-1]), lra, float(m_p[-1])
+    x, sr = sf.read(path, dtype="float64")
+    if x.ndim == 1:
+        x = np.stack([x, x], axis=1)
+    return measure_lufs_lra_tp_python(x, sr)
 
 
 def write_wav_24bit_tpdf(path, x_float64, sr, seed=9999):
@@ -59,29 +162,114 @@ def write_wav_24bit_tpdf(path, x_float64, sr, seed=9999):
     sf.write(path, y, sr, subtype="PCM_24")
 
 
-def estimate_bpm(x_stereo, sr):
-    M = 0.5 * (x_stereo[:, 0] + x_stereo[:, 1])
-    n_use = min(len(M), 60 * sr)
-    start = max(0, (len(M) - n_use) // 2)
-    seg = M[start:start + n_use]
-    hop = max(1, sr // 100)
+def _dyadic_fft_bpm(seg, sr, rate=200.0, bpm_lo=85.0, bpm_hi=170.0):
+    """Dyadic FFT tempogram (scores 0.5x + 1x + 2x + 4x beat harmonics to resist subharmonic traps)."""
+    hop = max(1, int(round(sr / rate)))
     n = len(seg) // hop
+    if n < 64:
+        return 120.0
     env = np.sqrt(np.mean(seg[:n * hop].reshape(n, hop) ** 2, axis=1) + 1e-12)
     odf = np.maximum(0.0, np.diff(env))
-    ac = signal.correlate(odf, odf, mode="full")[len(odf) - 1:]
-    lo_lag = int(round(60.0 / 170.0 * 100.0))
-    hi_lag = int(round(60.0 / 85.0 * 100.0))
-    best = lo_lag + int(np.argmax(ac[lo_lag:min(hi_lag, len(ac))]))
-    return 6000.0 / max(best, 1)
+    odf = odf - np.mean(odf)
+    nfft = 1 << int(np.ceil(np.log2(max(len(odf) * 4, 256))))
+    spec = np.abs(np.fft.rfft(odf * np.hanning(len(odf)), n=nfft))
+    freqs = np.fft.rfftfreq(nfft, d=1.0 / rate)
+    bpms = freqs * 60.0
+    idx = np.where((bpms >= bpm_lo) & (bpms <= bpm_hi))[0]
+    if len(idx) == 0:
+        return 120.0
+    s = (spec[idx]
+         + 0.6 * spec[np.maximum(idx // 2, 1)]
+         + 0.6 * spec[np.minimum(idx * 2, len(spec) - 1)]
+         + 0.35 * spec[np.minimum(idx * 4, len(spec) - 1)])
+    best = idx[int(np.argmax(s))]
+    return round(float(bpms[best]), 1)
 
 
-def load_stems_and_split(orig, sr, stems_dir, target_keyword, power=2.5):
+def estimate_bpm(x_stereo, sr, drums_stereo=None):
     """
-    87.5%-overlap exact additive complex Wiener split (orig == xs + xb to ~1e-15).
-    - Auto-detects correlated bleed stems (e.g. Keyboard duplicating Synth)
-    - Applies 1.4x protection weighting to any Vocal stem so lead vocals stay 100% untouched
-    - Protects sub-90 Hz 100% in backing
+    Estimate BPM using a dyadic FFT tempogram. Uses the kick band (40-140 Hz) of the Drums
+    stem when available, or the full mix otherwise.
     """
+    if drums_stereo is not None and np.std(drums_stereo) > 1e-5:
+        M = 0.5 * (drums_stereo[:, 0] + drums_stereo[:, 1])
+        M = signal.sosfiltfilt(signal.butter(4, [40.0, 140.0], btype="bandpass", fs=sr, output="sos"), M)
+        return _dyadic_fft_bpm(M, sr, rate=200.0)
+    M = 0.5 * (x_stereo[:, 0] + x_stereo[:, 1])
+    return _dyadic_fft_bpm(M, sr, rate=200.0)
+
+
+def select_auto_audition_ranges(orig, sr, stems=None, target_name=None, clip_s=14.0):
+    """
+    Automatically pick 2-3 maximally revealing audition ranges:
+      1) Exposed intro / quiet opening
+      2) Strongest target-stem / melodic hook section
+      3) Densest vocal + drum climax chorus
+    """
+    N = len(orig)
+    dur = N / sr
+    if dur <= clip_s * 1.5:
+        return [(0.0, round(dur, 1))]
+
+    step_s = 5.0
+    win = int(round(clip_s * sr))
+    step = int(round(step_s * sr))
+    starts = list(range(0, max(1, N - win), step))
+    if not starts:
+        return [(0.0, round(min(clip_s, dur), 1))]
+
+    mix_db = np.array([20.0 * math.log10(float(np.sqrt(np.mean(orig[s:s + win] ** 2))) + 1e-12) for s in starts])
+    ts = np.array([s / sr for s in starts])
+
+    # 1. Exposed intro: earliest non-silent window in first 25% of track
+    peak_mix = float(np.max(mix_db))
+    early_mask = (ts >= 4.0) & (ts <= max(20.0, dur * 0.25)) & (mix_db > peak_mix - 18.0)
+    if np.any(early_mask):
+        idx_intro = int(np.where(early_mask)[0][0])
+    else:
+        idx_intro = min(1, len(starts) - 1)
+    t_intro = float(ts[idx_intro])
+
+    # 2. Exposed hook / target stem peak (at least clip_s + 6s away from intro)
+    if stems and target_name and target_name in stems:
+        xs = stems[target_name]
+        syn_db = np.array([20.0 * math.log10(float(np.sqrt(np.mean(xs[s:s + win] ** 2))) + 1e-12) for s in starts])
+        vox_keys = [k for k in stems if "lead" in k.lower() or "vocal" in k.lower()]
+        if vox_keys:
+            xv = stems[vox_keys[0]]
+            vox_db = np.array([20.0 * math.log10(float(np.sqrt(np.mean(xv[s:s + win] ** 2))) + 1e-12) for s in starts])
+            hook_score = syn_db - 0.35 * np.maximum(vox_db, -45.0)
+        else:
+            hook_score = syn_db
+    else:
+        # Mid-high band energy proxy for melodic hook
+        hook_score = mix_db.copy()
+
+    far_from_intro = np.abs(ts - t_intro) >= (clip_s + 6.0)
+    if np.any(far_from_intro):
+        cand = np.where(far_from_intro)[0]
+        idx_hook = int(cand[int(np.argmax(hook_score[cand]))])
+        t_hook = float(ts[idx_hook])
+    else:
+        t_hook = None
+
+    # 3. Densest climax chorus (loudest overall mix away from intro and hook)
+    far_both = np.abs(ts - t_intro) >= (clip_s + 6.0)
+    if t_hook is not None:
+        far_both = far_both & (np.abs(ts - t_hook) >= (clip_s + 6.0))
+    if np.any(far_both):
+        cand = np.where(far_both)[0]
+        idx_chorus = int(cand[int(np.argmax(mix_db[cand]))])
+        t_chorus = float(ts[idx_chorus])
+    else:
+        t_chorus = None
+
+    chosen = sorted([t for t in [t_intro, t_hook, t_chorus] if t is not None])
+    return [(round(t, 1), round(min(dur, t + clip_s), 1)) for t in chosen]
+
+
+def read_stems_folder(orig, sr, stems_dir, target_keyword):
+    """Load and validate all WAV stems matching orig shape/sample rate."""
     files = sorted(glob.glob(os.path.join(stems_dir, "*.wav")))
     if not files:
         raise FileNotFoundError(f"No .wav stems found in {stems_dir}")
@@ -97,10 +285,27 @@ def load_stems_and_split(orig, sr, stems_dir, target_keyword, power=2.5):
 
     matches = [k for k in stems if target_keyword.lower() in k.lower()]
     if not matches:
-        raise ValueError(f"No stem matching '{target_keyword}' in {list(stems.keys())}")
-    target_name = matches[0]
-    x_syn = stems[target_name]
+        # Fallback: pick loudest non-vocal, non-drum, non-bass stem
+        non_core = [k for k in stems if not any(w in k.lower() for w in ("vocal", "vox", "drum", "bass", "perc"))]
+        pool = non_core if non_core else list(stems.keys())
+        target_name = max(pool, key=lambda k: float(np.mean(stems[k] ** 2)))
+        print(f"  Note: no stem matched '{target_keyword}'; auto-selected loudest melodic stem: {target_name}")
+    else:
+        target_name = matches[0]
 
+    drums_matches = [k for k in stems if "drum" in k.lower()]
+    drums_stereo = stems[drums_matches[0]] if drums_matches else None
+    return stems, target_name, drums_stereo
+
+
+def split_stems_wiener(orig, sr, stems, target_name, power=2.5):
+    """
+    87.5%-overlap exact additive complex Wiener split (orig == xs + xb to ~1e-15).
+    - Auto-detects correlated bleed stems (e.g. Keyboard duplicating Synth)
+    - Applies 1.4x protection weighting to any Vocal stem so lead vocals stay untouched
+    - Protects sub-90 Hz 100% in backing
+    """
+    x_syn = stems[target_name]
     leak_names, vocal_names, other_names = [], [], []
     for k, v in stems.items():
         if k == target_name:
@@ -124,7 +329,6 @@ def load_stems_and_split(orig, sr, stems_dir, target_keyword, power=2.5):
     x_voc = sum(stems[n] for n in vocal_names) if vocal_names else np.zeros_like(orig)
     x_other = sum(stems[n] for n in other_names) if other_names else np.zeros_like(orig)
 
-    # 87.5% overlap (hop=256 on 2048-FFT) for silky-smooth mask transitions
     n_fft, hop = 2048, 256
     win = signal.windows.hann(n_fft, sym=False)
     out_s = np.zeros_like(orig)
@@ -163,11 +367,7 @@ def load_stems_and_split(orig, sr, stems_dir, target_keyword, power=2.5):
 
 
 def oversampled_class_a_sat(x, sr, drive=1.45, asym=0.035, wet=0.22, hp_protect_hz=120.0, ms_mode=False, os_factor=4):
-    """
-    4x oversampled (192 kHz) Class-A asymmetric triode/tape saturation with sub-bass protection
-    (>hp_protect_hz only, leaving kick & sub-bass 100% raw and uncompressed!).
-    Optional Mid/Side mode gives warmer triode glow on Mid and ultra-clean wide sheen on Side.
-    """
+    """4x oversampled Class-A asymmetric triode/tape saturation with sub-bass protection (>hp_protect_hz)."""
     N = len(x)
     if hp_protect_hz and hp_protect_hz > 25.0:
         sos_lp = signal.butter(4, hp_protect_hz, btype="lowpass", fs=sr, output="sos")
@@ -233,10 +433,7 @@ def lanczos_resample_variable(x_ch, read_pos, a_lz=4):
 
 
 def time_domain_bbd_chorus_hq(x, sr, hp_hz=900.0, base_ms=6.2, depth_ms=1.8, rate_hz=0.34, wet=0.14):
-    """
-    Pure time-domain quadrature Juno-style BBD stereo chorus using 8-tap Lanczos-4 sinc
-    interpolation (zero interpolation treble loss!) applied strictly above hp_hz.
-    """
+    """Pure time-domain quadrature Juno-style BBD stereo chorus using 8-tap Lanczos-4 sinc interpolation."""
     N = len(x)
     sos_hp = signal.butter(4, hp_hz, btype="highpass", fs=sr, output="sos")
     x_hi = signal.sosfiltfilt(sos_hp, x, axis=0)
@@ -284,11 +481,7 @@ def detect_hf_cliff_hz(x_full, sr):
 
 
 def build_linear_phase_comb_fir(x_full, sr, max_cut_db=2.2, fir_taps=4097):
-    """
-    Build an exact 0.000-degree Linear-Phase Blackman-windowed FIR impulse response
-    for conservative stationary comb flattening + exact broadband tonal neutrality!
-    Eliminates STFT framing completely from the mastering chain (100% continuous LTI convolution!).
-    """
+    """Build an exact 0.000-degree Linear-Phase Blackman-windowed FIR for conservative comb flattening."""
     n_fft, hop = 16384, 4096
     win = signal.windows.hann(n_fft, sym=False)
     freqs = np.linspace(0.0, sr / 2.0, n_fft // 2 + 1)
@@ -310,10 +503,6 @@ def build_linear_phase_comb_fir(x_full, sr, max_cut_db=2.2, fir_taps=4097):
         cut_db = np.convolve(cut_db, [0.25, 0.5, 0.25], mode="same")
         g_raw = 10.0 ** (-cut_db / 20.0)
 
-        # Preserve broadband 1/2-octave energy with an ultra-smooth envelope (max +0.55 dB gentle sparkle restore)
-        # so cutting narrow comb teeth NEVER dims cymbals, vocal breath, or upper mids!
-        smooth_loss_db = signal.medfilt(cut_db, kernel_size=181)  # ~530 Hz wide smooth average cut
-        # Actually use moving average over ~1200 Hz (401 bins) for super smooth gentle restore
         k_sm = 401
         avg_loss_db = np.convolve(cut_db, np.ones(k_sm) / k_sm, mode="same")
         g_bal = g_raw * (10.0 ** (np.clip(avg_loss_db, 0.0, 0.65) / 20.0))
@@ -321,7 +510,6 @@ def build_linear_phase_comb_fir(x_full, sr, max_cut_db=2.2, fir_taps=4097):
         if ch == 0:
             print(f"  [Comb-FIR] Linear-phase FIR ({fir_taps} taps): {int(np.sum(cut_db > 0.2))} narrow comb bins (max -{cut_db.max():.2f} dB, broadband restore max +{avg_loss_db.max():.2f} dB)")
 
-        # Convert zero-phase target magnitude g_bal to exact symmetric linear-phase FIR via irfft + Blackman window
         h_full = np.fft.irfft(g_bal, n=n_fft)
         h_shift = np.fft.fftshift(h_full)
         mid = n_fft // 2
@@ -341,9 +529,9 @@ def apply_linear_phase_fir(x, h_kernels):
 
 def apply_reference_sparkle_fir(y_proc, x_ref, sr, fir_taps=2049, max_db=0.85):
     """
-    Ultra-gentle, broad (~1-octave) linear-phase FIR mastering balance trim (60 Hz - 18.2 kHz)
-    clamped strictly within +-0.85 dB so every band from 30 Hz to 18.5 kHz sits within +-0.08 dB
-    of the original reference (ZERO STFT framing, ZERO phase distortion).
+    Gentle broad (~1-octave) linear-phase FIR balance trim (60 Hz - 18.2 kHz)
+    clamped strictly within +-0.85 dB so every band from 30 Hz to 16 kHz stays close
+    to the original reference (zero STFT framing, zero phase distortion).
     """
     n_fft = 8192
     freqs = np.linspace(0.0, sr / 2.0, n_fft // 2 + 1)
@@ -370,11 +558,7 @@ def apply_reference_sparkle_fir(y_proc, x_ref, sr, fir_taps=2049, max_db=0.85):
 
 
 def time_domain_envelope_air_exciter(x, sr, cliff_hz=18000.0, mix=0.46):
-    """
-    Envelope-following 4x-oversampled time-domain harmonic air exciter (Aphex / Fresh Air style).
-    Generates silky, phase-coherent harmonic air above the detected HF cliff while gating cleanly
-    down during quiet gaps so zero extra hiss appears between notes or vocal phrases.
-    """
+    """Envelope-following 4x-oversampled time-domain harmonic air exciter above the HF cliff."""
     nyq = sr / 2.0
     out_hp = min(max(cliff_hz - 400.0, 14500.0), nyq - 2500.0)
     out_lp = min(nyq - 1200.0, 22800.0)
@@ -401,7 +585,6 @@ def time_domain_envelope_air_exciter(x, sr, cliff_hz=18000.0, mix=0.46):
     sos_out = signal.butter(4, [out_hp, out_lp], btype="bandpass", fs=sr, output="sos")
     air = signal.sosfiltfilt(sos_out, air, axis=0)
 
-    # Smooth dynamic gate following source HF band energy (dead-clean quiet gaps!)
     env_sq = signal.sosfiltfilt(signal.butter(2, 25.0, btype="lowpass", fs=sr, output="sos"),
                                 np.mean(src ** 2, axis=1))
     env = np.sqrt(np.maximum(env_sq, 0.0))
@@ -459,21 +642,13 @@ def stereo_linked_lanczos8_timing_breath(x, sr, max_rate=0.0011, seed=2026):
 
 
 def apply_full_mix_cleanup_v2(x, x_ref, sr, comb_firs, cliff_hz, seed=2026):
-    # 1. Exact continuous Linear-Phase FIR stationary comb flattening (ZERO STFT framing!)
     y = apply_linear_phase_fir(x, comb_firs)
-    # 2. Envelope-following 4x-oversampled time-domain harmonic air exciter above HF cliff
     y = time_domain_envelope_air_exciter(y, sr, cliff_hz=cliff_hz, mix=0.46)
-    # 3. Pure time-domain analog allpass phase cascade (>5.8 kHz, exact 0.000 dB magnitude)
     y = analog_allpass_cascade(y, sr)
-    # 4. Subtle time-domain slow biquad mastering tonal breath (+-0.40 dB)
     y = time_domain_slow_mastering_breath(y, sr, max_db=0.40, seed=seed)
-    # 5. Stereo-linked Lanczos-8 (16-tap) organic micro-tempo breath
     y = stereo_linked_lanczos8_timing_breath(y, sr, max_rate=0.0011, seed=seed)
-    # 6. Sub-protected (>120 Hz) Mid/Side Class-A 4x-oversampled mastering warmth
     y = oversampled_class_a_sat(y, sr, drive=1.22, asym=0.015, wet=0.11, hp_protect_hz=120.0, ms_mode=True, os_factor=4)
-    # 7. Broad linear-phase reference-sparkle balance trim (flat +-0.08 dB from 30 Hz to 18.5 kHz)
     y = apply_reference_sparkle_fir(y, x_ref, sr, fir_taps=2049, max_db=0.85)
-    # 8. Subtle -82 dBFS 1/f natural analog converter floor (independent L/R)
     rng = np.random.default_rng(seed + 5555)
     N = len(y)
     for ch in range(2):
@@ -505,7 +680,6 @@ def spectral_qa(x_orig, x_proc, sr, cliff_hz):
         e_hi = float(np.mean(Pd[(fq >= cliff_hz + 1000.0) & (fq < min(cliff_hz + 3500.0, sr / 2.0 - 200.0))]))
         lr = float(np.corrcoef(x[:, 0], x[:, 1])[0, 1])
         mono = float(10.0 * np.log10(np.mean((0.5 * (x[:, 0] + x[:, 1])) ** 2) / (np.mean(x ** 2) + 1e-12)))
-        # High-frequency transient crest factor (6-16 kHz) -> checks cymbal & consonant punch!
         sos_hf = signal.butter(4, [6000.0, min(16000.0, sr * 0.44)], btype="bandpass", fs=sr, output="sos")
         hf = signal.sosfiltfilt(sos_hf, M)
         hf_crest = float(20.0 * np.log10((np.percentile(np.abs(hf), 99.9) + 1e-12) / (np.sqrt(np.mean(hf ** 2)) + 1e-12)))
@@ -533,48 +707,59 @@ def parse_ranges(spec):
     return [(float(p.split("-")[0]), float(p.split("-")[1])) for p in spec.split(",")]
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Reference-Audiophile Zero-Artifact Audio Cleanup & Analog Mastering (v2)")
-    ap.add_argument("--input", required=True, help="Path to original stereo WAV")
-    ap.add_argument("--stems-dir", default=None, help="Optional folder of WAV stems")
-    ap.add_argument("--target-stem", default="Synth", help="Substring identifying primary stem to re-amp")
-    ap.add_argument("--bpm", type=float, default=None, help="Track BPM (auto-estimated if omitted)")
-    ap.add_argument("--audition-ranges", default="32-46,110-122", help="Comma-separated start-end seconds for audition")
-    ap.add_argument("--out-dir", required=True, help="Output directory")
-    ap.add_argument("--mode", choices=["audition", "full"], default="audition", help="audition or full")
-    ap.add_argument("--skip-stem-reamp", action="store_true", help="Ablation flag: skip stem re-amp pass")
-    ap.add_argument("--skip-mix-cleanup", action="store_true", help="Ablation flag: skip full-mix cleanup pass")
-    ap.add_argument("--also-float32", action="store_true", help="Also write an archival 32-bit float WAV in full mode")
-    ap.add_argument("--seed", type=int, default=2026, help="Random seed")
-    args = ap.parse_args()
-
-    os.makedirs(args.out_dir, exist_ok=True)
+def process_track(
+    input_path,
+    out_dir,
+    stems_dir=None,
+    target_stem="Synth",
+    bpm=None,
+    audition_ranges="auto",
+    mode="audition",
+    skip_stem_reamp=False,
+    skip_mix_cleanup=False,
+    also_float32=False,
+    force_python_lufs=False,
+    seed=2026,
+):
+    """Core standalone processing entry point usable from CLI, batch mode, or local web UI."""
+    os.makedirs(out_dir, exist_ok=True)
     t0 = time.time()
-    stem_base = os.path.splitext(os.path.basename(args.input))[0]
+    stem_base = os.path.splitext(os.path.basename(input_path))[0]
+    lufs_backend = "python-bs1770" if (force_python_lufs or not _HAS_FFMPEG) else "ffmpeg-ebur128"
 
-    print(f"1. Loading original: {args.input}")
-    orig, sr = sf.read(args.input, dtype="float64")
+    print(f"1. Loading original: {input_path} (loudness engine: {lufs_backend})")
+    orig, sr = sf.read(input_path, dtype="float64")
     if orig.ndim == 1:
         orig = np.stack([orig, orig], axis=1)
     N = len(orig)
-    bpm = args.bpm if args.bpm else estimate_bpm(orig, sr)
+
+    stems, target_name, drums_stereo = None, None, None
+    if stems_dir and os.path.isdir(stems_dir):
+        stems, target_name, drums_stereo = read_stems_folder(orig, sr, stems_dir, target_stem)
+
+    bpm_val = float(bpm) if bpm else estimate_bpm(orig, sr, drums_stereo=drums_stereo)
     cliff_hz, cliff_drop = detect_hf_cliff_hz(orig, sr)
-    print(f"   {N/sr:.3f}s, {sr} Hz, stereo, BPM={bpm:.1f}, detected HF cliff={cliff_hz:.0f} Hz (drop {cliff_drop:.1f} dB)")
+    print(f"   {N/sr:.3f}s, {sr} Hz, stereo, BPM={bpm_val:.1f}, detected HF cliff={cliff_hz:.0f} Hz (drop {cliff_drop:.1f} dB)")
 
-    comb_firs = build_linear_phase_comb_fir(orig, sr) if not args.skip_mix_cleanup else None
+    comb_firs = build_linear_phase_comb_fir(orig, sr) if not skip_mix_cleanup else None
 
-    if args.stems_dir and not args.skip_stem_reamp:
+    if stems is not None and not skip_stem_reamp:
         print("2. Running 87.5%-overlap exact Wiener split (vocal-guarded) + Lanczos-4 time-domain stem re-amp...")
-        xs, xb = load_stems_and_split(orig, sr, args.stems_dir, args.target_stem)
-        s_reamp = reamp_stem_time_domain(xs, sr, bpm)
+        xs, xb = split_stems_wiener(orig, sr, stems, target_name)
+        s_reamp = reamp_stem_time_domain(xs, sr, bpm_val)
         working = xb + s_reamp
         del xs, xb, s_reamp
     else:
         print("2. Stem re-amp skipped (processing full mix directly).")
         working = orig.copy()
 
-    if args.mode == "audition":
-        ranges = parse_ranges(args.audition_ranges)
+    if mode == "audition":
+        if not audition_ranges or audition_ranges.strip().lower() == "auto":
+            ranges = select_auto_audition_ranges(orig, sr, stems=stems, target_name=target_name)
+            print(f"   Auto-selected audition ranges (s): {ranges}")
+        else:
+            ranges = parse_ranges(audition_ranges)
+
         sil_1 = np.zeros((sr, 2), dtype=np.float64)
         sil_2 = np.zeros((2 * sr, 2), dtype=np.float64)
         pieces, report_pairs, cursor = [], [], 0.0
@@ -583,17 +768,17 @@ def main():
             s0, s1 = int(round(t_a * sr)), min(N, int(round(t_b * sr)))
             o_seg = orig[s0:s1]
             w_seg = working[s0:s1]
-            p_seg = apply_full_mix_cleanup_v2(w_seg, o_seg, sr, comb_firs, cliff_hz, seed=args.seed + idx) if not args.skip_mix_cleanup else w_seg.copy()
+            p_seg = apply_full_mix_cleanup_v2(w_seg, o_seg, sr, comb_firs, cliff_hz, seed=seed + idx) if not skip_mix_cleanup else w_seg.copy()
 
-            tmp_o = os.path.join(args.out_dir, f"_tmp_o_{idx}.wav")
-            tmp_p = os.path.join(args.out_dir, f"_tmp_p_{idx}.wav")
+            tmp_o = os.path.join(out_dir, f"_tmp_o_{idx}.wav")
+            tmp_p = os.path.join(out_dir, f"_tmp_p_{idx}.wav")
             write_wav_24bit_tpdf(tmp_o, o_seg, sr, seed=100 + idx)
             write_wav_24bit_tpdf(tmp_p, p_seg, sr, seed=200 + idx)
-            lo, _, tpo = measure_lufs_lra_tp(tmp_o)
-            lp, _, _ = measure_lufs_lra_tp(tmp_p)
+            lo, _, tpo = measure_lufs_lra_tp(tmp_o, force_python=force_python_lufs)
+            lp, _, _ = measure_lufs_lra_tp(tmp_p, force_python=force_python_lufs)
             p_seg *= 10.0 ** ((lo - lp) / 20.0)
             write_wav_24bit_tpdf(tmp_p, p_seg, sr, seed=300 + idx)
-            lpm, _, tpp = measure_lufs_lra_tp(tmp_p)
+            lpm, _, tpp = measure_lufs_lra_tp(tmp_p, force_python=force_python_lufs)
             os.remove(tmp_o)
             os.remove(tmp_p)
 
@@ -618,64 +803,153 @@ def main():
                 "qa": spectral_qa(o_seg, p_seg, sr, cliff_hz),
             })
 
-        out_wav = os.path.join(args.out_dir, f"{stem_base}-Reference-Master-Audition.wav")
-        write_wav_24bit_tpdf(out_wav, np.concatenate(pieces, axis=0), sr, seed=args.seed)
+        out_wav = os.path.join(out_dir, f"{stem_base}-Reference-Master-Audition.wav")
+        write_wav_24bit_tpdf(out_wav, np.concatenate(pieces, axis=0), sr, seed=seed)
+        result = {
+            "mode": "audition",
+            "output_wav": out_wav,
+            "bpm": bpm_val,
+            "lufs_backend": lufs_backend,
+            "elapsed_s": round(time.time() - t0, 1),
+            "pairs": report_pairs,
+        }
         print(f"\nWrote audition WAV ({cursor:.2f}s, 24-bit TPDF/{sr}Hz): {out_wav}")
         print(json.dumps(report_pairs, indent=2))
+        return result
+
+    print("3. Running zero-STFT-framing contiguous linear-phase mastering chain across full track...")
+    proc = apply_full_mix_cleanup_v2(working, orig, sr, comb_firs, cliff_hz, seed=seed) if not skip_mix_cleanup else working.copy()
+    del working
+
+    tmp_o = os.path.join(out_dir, "_tmp_full_orig.wav")
+    tmp_p = os.path.join(out_dir, "_tmp_full_proc.wav")
+    write_wav_24bit_tpdf(tmp_o, orig, sr, seed=11)
+    write_wav_24bit_tpdf(tmp_p, proc, sr, seed=22)
+    lo, lrao, tpo = measure_lufs_lra_tp(tmp_o, force_python=force_python_lufs)
+    lp, _, _ = measure_lufs_lra_tp(tmp_p, force_python=force_python_lufs)
+    proc *= 10.0 ** ((lo - lp) / 20.0)
+    pk_lin = float(np.max(np.abs(proc)))
+    if pk_lin > 0.891:
+        proc *= (0.891 / pk_lin)
+
+    out_wav = os.path.join(out_dir, f"{stem_base}-Reference-Analog-Master-24bit-{sr//1000}kHz.wav")
+    write_wav_24bit_tpdf(out_wav, proc, sr, seed=seed)
+    f32_wav = None
+    if also_float32:
+        f32_wav = os.path.join(out_dir, f"{stem_base}-Reference-Analog-Master-32f-{sr//1000}kHz.wav")
+        sf.write(f32_wav, proc.astype(np.float32), sr, subtype="FLOAT")
+
+    lpm, lrap, tpp = measure_lufs_lra_tp(out_wav, force_python=force_python_lufs)
+    os.remove(tmp_o)
+    os.remove(tmp_p)
+
+    spot_dir = os.path.join(out_dir, "spot_checks")
+    os.makedirs(spot_dir, exist_ok=True)
+    total_s = N / sr
+    spots = [
+        ("intro", min(5.0, total_s * 0.05), 14.0),
+        ("hook", min(32.0, total_s * 0.20), 14.0),
+        ("verse", min(65.0, total_s * 0.35), 14.0),
+        ("bridge", min(145.0, total_s * 0.56), 14.0),
+    ]
+    spot_files = {}
+    for nm, ts, dur in spots:
+        a, b = int(round(ts * sr)), min(N, int(round((ts + dur) * sr)))
+        sp = os.path.join(spot_dir, f"spot_{nm}.wav")
+        sf.write(sp, proc[a:b], sr, subtype="PCM_16")
+        spot_files[nm] = sp
+
+    summary = {
+        "mode": "full",
+        "output_wav": out_wav,
+        "float32_wav": f32_wav,
+        "spot_checks": spot_files,
+        "bpm": bpm_val,
+        "lufs_backend": lufs_backend,
+        "duration_s": round(N / sr, 3),
+        "sample_rate": sr,
+        "bit_depth": 24,
+        "dither": "1-LSB TPDF",
+        "orig_lufs": lo, "proc_lufs": lpm,
+        "orig_lra": lrao, "proc_lra": lrap,
+        "orig_tp_dbtp": tpo, "proc_tp_dbtp": tpp,
+        "any_nan_or_inf": bool(np.isnan(proc).any() or np.isinf(proc).any()),
+        "elapsed_s": round(time.time() - t0, 1),
+        "qa": spectral_qa(orig, proc, sr, cliff_hz),
+    }
+    print(f"\nWrote full 24-bit TPDF reference master: {out_wav}")
+    print(json.dumps(summary, indent=2))
+    return summary
+
+
+def find_matching_stems_dir(wav_path):
+    """Auto-discover a sibling '<TrackName> Stems' folder for batch processing."""
+    base = os.path.splitext(wav_path)[0]
+    for suffix in (" Stems", "_Stems", " stems", "_stems"):
+        cand = base + suffix
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="De-AI Audio Master: Standalone Zero-Artifact Audio Cleanup & Linear-Phase Mastering CLI"
+    )
+    ap.add_argument("--input", required=True, help="Path to original stereo WAV or a folder of WAVs (batch mode)")
+    ap.add_argument("--stems-dir", default=None, help="Optional folder of WAV stems (auto-matched in batch mode)")
+    ap.add_argument("--target-stem", default="Synth", help="Substring identifying primary melodic stem to re-amp")
+    ap.add_argument("--bpm", type=float, default=None, help="Track BPM (auto-estimated from Drums/mix if omitted)")
+    ap.add_argument("--audition-ranges", default="auto", help="'auto' (default) or comma-separated start-end seconds, e.g. 5-19,105-119")
+    ap.add_argument("--out-dir", default="./deai_out", help="Output directory (default: ./deai_out)")
+    ap.add_argument("--mode", choices=["audition", "full"], default="audition", help="audition (default) or full")
+    ap.add_argument("--skip-stem-reamp", action="store_true", help="Ablation flag: skip stem re-amp pass")
+    ap.add_argument("--skip-mix-cleanup", action="store_true", help="Ablation flag: skip full-mix cleanup pass")
+    ap.add_argument("--also-float32", action="store_true", help="Also write an archival 32-bit float WAV in full mode")
+    ap.add_argument("--python-lufs", action="store_true", help="Use built-in pure-Python BS.1770-4 loudness instead of ffmpeg")
+    ap.add_argument("--seed", type=int, default=2026, help="Random seed")
+    args = ap.parse_args()
+
+    if os.path.isdir(args.input):
+        wavs = sorted(glob.glob(os.path.join(args.input, "*.wav")))
+        if not wavs:
+            raise FileNotFoundError(f"No .wav files found in folder: {args.input}")
+        print(f"Batch mode: found {len(wavs)} WAV file(s) in {args.input}")
+        for idx, wav_path in enumerate(wavs, 1):
+            name = os.path.splitext(os.path.basename(wav_path))[0]
+            stems_dir = args.stems_dir or find_matching_stems_dir(wav_path)
+            track_out = os.path.join(args.out_dir, name)
+            print(f"\n=== [{idx}/{len(wavs)}] {os.path.basename(wav_path)} (stems: {stems_dir or 'none'}) ===")
+            process_track(
+                input_path=wav_path,
+                out_dir=track_out,
+                stems_dir=stems_dir,
+                target_stem=args.target_stem,
+                bpm=args.bpm,
+                audition_ranges=args.audition_ranges,
+                mode=args.mode,
+                skip_stem_reamp=args.skip_stem_reamp,
+                skip_mix_cleanup=args.skip_mix_cleanup,
+                also_float32=args.also_float32,
+                force_python_lufs=args.python_lufs,
+                seed=args.seed,
+            )
     else:
-        print("3. Running zero-STFT-framing contiguous linear-phase mastering chain across full track...")
-        proc = apply_full_mix_cleanup_v2(working, orig, sr, comb_firs, cliff_hz, seed=args.seed) if not args.skip_mix_cleanup else working.copy()
-        del working
-
-        tmp_o = os.path.join(args.out_dir, "_tmp_full_orig.wav")
-        tmp_p = os.path.join(args.out_dir, "_tmp_full_proc.wav")
-        write_wav_24bit_tpdf(tmp_o, orig, sr, seed=11)
-        write_wav_24bit_tpdf(tmp_p, proc, sr, seed=22)
-        lo, lrao, tpo = measure_lufs_lra_tp(tmp_o)
-        lp, _, _ = measure_lufs_lra_tp(tmp_p)
-        proc *= 10.0 ** ((lo - lp) / 20.0)
-        pk_lin = float(np.max(np.abs(proc)))
-        if pk_lin > 0.891:
-            proc *= (0.891 / pk_lin)
-
-        out_wav = os.path.join(args.out_dir, f"{stem_base}-Reference-Analog-Master-24bit-{sr//1000}kHz.wav")
-        write_wav_24bit_tpdf(out_wav, proc, sr, seed=args.seed)
-        if args.also_float32:
-            f32_wav = os.path.join(args.out_dir, f"{stem_base}-Reference-Analog-Master-32f-{sr//1000}kHz.wav")
-            sf.write(f32_wav, proc.astype(np.float32), sr, subtype="FLOAT")
-
-        lpm, lrap, tpp = measure_lufs_lra_tp(out_wav)
-        os.remove(tmp_o)
-        os.remove(tmp_p)
-
-        spot_dir = os.path.join(args.out_dir, "spot_checks")
-        os.makedirs(spot_dir, exist_ok=True)
-        total_s = N / sr
-        spots = [
-            ("intro", min(5.0, total_s * 0.05), 14.0),
-            ("hook", min(32.0, total_s * 0.20), 14.0),
-            ("verse", min(65.0, total_s * 0.35), 14.0),
-            ("bridge", min(145.0, total_s * 0.56), 14.0),
-        ]
-        for nm, ts, dur in spots:
-            a, b = int(round(ts * sr)), min(N, int(round((ts + dur) * sr)))
-            sf.write(os.path.join(spot_dir, f"spot_{nm}.wav"), proc[a:b], sr, subtype="PCM_16")
-
-        summary = {
-            "output_wav": out_wav,
-            "duration_s": round(N / sr, 3),
-            "sample_rate": sr,
-            "bit_depth": 24,
-            "dither": "1-LSB TPDF",
-            "orig_lufs": lo, "proc_lufs": lpm,
-            "orig_lra": lrao, "proc_lra": lrap,
-            "orig_tp_dbtp": tpo, "proc_tp_dbtp": tpp,
-            "any_nan_or_inf": bool(np.isnan(proc).any() or np.isinf(proc).any()),
-            "elapsed_s": round(time.time() - t0, 1),
-            "qa": spectral_qa(orig, proc, sr, cliff_hz),
-        }
-        print(f"\nWrote full 24-bit TPDF reference master: {out_wav}")
-        print(json.dumps(summary, indent=2))
+        stems_dir = args.stems_dir
+        process_track(
+            input_path=args.input,
+            out_dir=args.out_dir,
+            stems_dir=stems_dir,
+            target_stem=args.target_stem,
+            bpm=args.bpm,
+            audition_ranges=args.audition_ranges,
+            mode=args.mode,
+            skip_stem_reamp=args.skip_stem_reamp,
+            skip_mix_cleanup=args.skip_mix_cleanup,
+            also_float32=args.also_float32,
+            force_python_lufs=args.python_lufs,
+            seed=args.seed,
+        )
 
 
 if __name__ == "__main__":
