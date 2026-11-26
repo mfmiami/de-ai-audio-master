@@ -102,10 +102,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
       <div>
         <label>Profile</label>
         <select id="profile">
-          <option value="auto" selected>Auto (detect from stems)</option>
+          <option value="auto" selected>Auto (detect from stems or stereo mix)</option>
           <option value="electronic">Electronic / Synth</option>
           <option value="rock">Rock / Guitar Band (Vocals + Drums + Guitar + Bass)</option>
           <option value="hiphop">Hip-Hop / R&amp;B / Vocal-Drum (Vocals + Drums + Bass + Sample)</option>
+          <option value="acoustic">Acoustic / Jazz / Classical (Unplugged &amp; Pitch-True)</option>
         </select>
       </div>
       <div>
@@ -114,7 +115,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       </div>
       <div>
         <label>Varispeed % (blank = profile default)</label>
-        <input id="varispeed" type="number" step="0.05" placeholder="0 (elec) / +1.15 (rock) / +1.10 (hiphop)">
+        <input id="varispeed" type="number" step="0.05" placeholder="0 (elec/acoust) / +1.15 (rock) / +1.10 (hiphop)">
       </div>
       <div>
         <label>BPM (blank = auto)</label>

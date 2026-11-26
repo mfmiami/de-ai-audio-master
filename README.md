@@ -1,6 +1,6 @@
 # De-AI Audio Master
 
-> **Work in progress:** This tool has been tested on electronic/synth tracks, guitar-driven rock tracks, and vocal/drum-driven hip-hop tracks. Its three acoustic archetypes also cover neighboring genres (R&B, vocal pop, soul, metal, indie, country), while solo acoustic, jazz, and classical tracks may still need dedicated tuning. Always run the audition pass first and trust your ears.
+> **Work in progress:** This tool has been verified on electronic/synth, guitar-driven rock, and vocal/drum-driven hip-hop tracks, and includes a fourth `acoustic` archetype for unplugged, jazz, and classical mixes. Always run the audition pass first and trust your ears.
 
 A standalone, 100% local Python DSP tool for cleaning up common technical artifacts in AI-generated tracks (from tools like Suno or Udio) without wrecking the mix.
 
@@ -49,16 +49,25 @@ deai-master --input "/path/to/album_folder" --profile auto --mode full --also-fl
 deai-master-ui --open
 ```
 
-The local web UI starts on `http://127.0.0.1:8765`, lets you pick a WAV, optional stems, and profile (`Auto`, `Electronic / Synth`, `Rock / Guitar Band`, or `Hip-Hop / R&B / Vocal-Drum`), plays the loudness-matched A/B audition right in the browser with jump buttons for each pair, prints the QA table, and exports the final 24-bit WAV.
+The local web UI starts on `http://127.0.0.1:8765`, lets you pick a WAV, optional stems, and profile (`Auto`, `Electronic / Synth`, `Rock / Guitar Band`, `Hip-Hop / R&B / Vocal-Drum`, or `Acoustic / Jazz / Classical`), plays the loudness-matched A/B audition right in the browser with jump buttons for each pair, prints the QA table, and exports the final 24-bit WAV.
 
-### Profiles (`--profile auto | electronic | rock | hiphop`)
+### Profiles (`--profile auto | electronic | rock | hiphop | acoustic`)
 
-Rather than chasing one-off presets per subgenre, the engine groups music into three 8x-oversampled (384 kHz internal) acoustic/stem-dominance archetypes based on where the `2 to 16 kHz` energy actually lives (pass `--oversample 4` if you want faster batch CPU runs):
+Rather than chasing one-off presets per subgenre, the engine groups music into four 8x-oversampled (384 kHz internal) acoustic/stem-dominance archetypes with energy-adaptive per-stem drive scaling so hybrid mixes adapt smoothly (pass `--oversample 4` if you want faster batch CPU runs):
 
 - **`electronic` (synth-led: EDM, House, Techno, Synthpop, Trance, Ambient)**: Uses a 2-way vocal-guarded Wiener split (re-amping the dominant synth/bleed stem with 8x Class-A warmth, 12-tap Lanczos-6 BBD chorus, and subtle BPM delay), 4097-tap linear-phase comb flattening, 8x-oversampled analog air above `15.2 kHz` (keeping `4 to 15 kHz` sparkling open), elliptical `<95 Hz` sub-mono tightening + M/S stereo bloom (`+0.75 dB` Side `>350 Hz`), a subtle 2049-tap linear-phase mastering contour (`+0.45 dB @ 55 Hz`, `-0.55 dB @ 240 Hz`, `+0.30 dB @ 9.5 kHz`), and `1.2%` console crosstalk. Default varispeed: `0.0%`.
-- **`rock` (guitar/band-led: Rock, Metal, Indie, Punk, Country, Acoustic Band)**: Uses a 4-way exact additive Wiener partition (`Vocals + Drums + Guitar + Bass/Rest`), applying 8x-oversampled per-stem rock chains (U47/Neve vocal de-ess/warmth + `5%` studio plate, `20%` New York parallel tape drum bus + `6.5%` drum room, minimum-phase 4x12 guitar cab with `7.8 kHz` cone rolloff, `5.2 kHz` bass LP), followed by 15-ips tape rolloff (`10.5 kHz`) + 8x-oversampled envelope-gated analog HF harmonic regeneration, tight `4.2%` shared live-room glue, `1.8:1` 3-band bus glue, `-1.1 dB @ 180 Hz` de-mud cleanup, elliptical `<105 Hz` sub-mono + M/S bloom (`+0.70 dB` Side `>300 Hz`), `2%` console crosstalk, and `+1.15%` analog tape varispeed + human drummer phrase/bar pocket.
-- **`hiphop` (vocal/drum/bass-led: Hip-Hop, Trap, R&B, Vocal Pop, Soul, Afrobeats, Reggaeton)**: Uses a 4-way exact additive Wiener partition (`Vocals + Drums + Bass + Sample/Melodic`), applying 8x-oversampled per-stem chains (upfront dry vocal preamp + gentle de-ess + tight `3.4%` plate, `22%` sub-95 Hz protected parallel tape drum bus + tight `3.6%` booth, 808-safe `4.5 kHz` LP bass harmonics above `95 Hz`, and Class-A + Lanczos-6 BBD sample/keys warmth), followed by `10.8 kHz` 8x analog HF regeneration (open to `21.5 kHz`), `2.4%` tight studio glue, sub-friendly 3-band bus glue, balanced hip-hop contour (`+1.0 dB @ 58 Hz`, `-1.0 dB @ 190 Hz`, `+1.4 dB @ 6.8 kHz`, `+1.0 dB @ 12.5 kHz`), elliptical `<95 Hz` sub-mono + M/S bloom (`+0.75 dB` Side `>320 Hz`), `1.8%` console crosstalk, and `+1.10%` MPC/tape varispeed + tight groove pocket. Pass `--varispeed-pct 0` on `rock` or `hiphop` whenever you need exact original pitch and duration for video sync or DAW stem alignment.
-- **`auto` (default)**: Inspects fullband and `2 to 16 kHz` stem energy when `--stems-dir` is given: picks `rock` when Guitar dominates, `hiphop` when Vocals + Drums dominate `2 to 16 kHz` over Synth, and `electronic` when Synth leads. Without stems, `auto` defaults to `electronic` (pass `--profile rock` or `--profile hiphop` explicitly for stereo-only bounces).
+- **`rock` (guitar/band-led: Rock, Metal, Indie, Punk, Country, Acoustic Band)**: Uses a 4-way exact additive Wiener partition (`Vocals + Drums + Guitar + Bass/Rest`), applying energy-adaptive 8x-oversampled per-stem rock chains (U47/Neve vocal de-ess/warmth + `5%` studio plate, `20%` New York parallel tape drum bus + `6.5%` drum room, minimum-phase 4x12 guitar cab with `7.8 kHz` cone rolloff, `5.2 kHz` bass LP), followed by 15-ips tape rolloff (`10.5 kHz`) + 8x-oversampled envelope-gated analog HF harmonic regeneration, tight `4.2%` shared live-room glue, `1.8:1` 3-band bus glue, `-1.1 dB @ 180 Hz` de-mud cleanup, elliptical `<105 Hz` sub-mono + M/S bloom (`+0.70 dB` Side `>300 Hz`), `2%` console crosstalk, and `+1.15%` analog tape varispeed + human drummer phrase/bar pocket.
+- **`hiphop` (vocal/drum/bass-led: Hip-Hop, Trap, R&B, Vocal Pop, Soul, Afrobeats, Reggaeton)**: Uses a 4-way exact additive Wiener partition (`Vocals + Drums + Bass + Sample/Melodic`), applying energy-adaptive 8x-oversampled per-stem chains (upfront dry vocal preamp + gentle de-ess + tight `3.4%` plate, `22%` sub-95 Hz protected parallel tape drum bus + tight `3.6%` booth, 808-safe `4.5 kHz` LP bass harmonics above `95 Hz`, and Class-A + Lanczos-6 BBD sample/keys warmth), followed by `10.8 kHz` 8x analog HF regeneration (open to `21.5 kHz`), `2.4%` tight studio glue, sub-friendly 3-band bus glue, balanced hip-hop contour (`+1.0 dB @ 58 Hz`, `-1.0 dB @ 190 Hz`, `+1.4 dB @ 6.8 kHz`, `+1.0 dB @ 12.5 kHz`), elliptical `<95 Hz` sub-mono + M/S bloom (`+0.75 dB` Side `>320 Hz`), `1.8%` console crosstalk, and `+1.10%` MPC/tape varispeed + tight groove pocket.
+- **`acoustic` (unplugged/orchestral: Solo Piano, Jazz, Classical, Strings, Acoustic Vocal Ballads)**: Uses a 4-way exact additive Wiener partition (`Vocals + Keys/Strings + Acoustic/Other + Bass/Light Perc`), applying energy-adaptive ribbon/condenser 8x warmth and natural wooden hall ambience (no heavy drum crush or electric guitar cab), followed by `11.8 kHz` 8x analog HF regeneration, ultra-gentle `1.4:1` dynamic preservation, gentle `<80 Hz` sub tightening + M/S bloom, `1.6%` console crosstalk, and pitch-true `0.0%` default varispeed + natural rubato micro-timing.
+- **`auto` (default)**: With `--stems-dir`, inspects fullband and `2 to 16 kHz` stem energy across all four archetypes (`acoustic`, `rock`, `hiphop`, `electronic`). Without stems, falls back to a stereo-only spectral, Mid/Side, and transient-contrast classifier so single-WAV drops auto-route cleanly too. Pass `--varispeed-pct 0` on `rock` or `hiphop` whenever you need exact original pitch and duration for video sync or DAW stem alignment.
+
+### Built-in regression test suite
+
+Run the self-contained 4-archetype regression suite (synthesizes multi-stem fixtures for all four archetypes and verifies auto-routing, LUFS matching, `<= -1.0 dBTP` true-peak ceiling, and clean 44-byte 24-bit headers):
+
+```bash
+python3 tests/test_regression.py
+```
 
 ### Built-in portability details
 
@@ -149,6 +158,8 @@ Or from [`dist/ai-audio-clean-master-v2-skill.zip`](./dist/ai-audio-clean-master
 │   ├── claude.md
 │   ├── codex.md
 │   └── models.md
+├── tests/
+│   └── test_regression.py             # 4-archetype synthetic & real-track regression suite
 ├── pyproject.toml
 ├── install.sh
 ├── requirements.txt
