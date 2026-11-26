@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "de-ai-audio-master"
-version = "2.3.0"
+version = "2.4.0"
 description = "Standalone local DSP tool and AI agent skill for cleaning technical artifacts in AI-generated tracks"
 readme = "README.md"
 license = "MIT"
